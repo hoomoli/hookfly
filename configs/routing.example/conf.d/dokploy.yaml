@@ -1,0 +1,12 @@
+kind: DokployTargets
+connections:
+  - id: dokploy-example
+    base_url: https://dokploy.example.invalid
+    api_key: ${DOKPLOY_API_KEY}
+targets:
+  - id: production
+    type: dokploy
+    connection: dokploy-example
+    resource_type: compose
+    resource_id: production
+    poll_timeout: 20m

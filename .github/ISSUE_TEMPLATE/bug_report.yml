@@ -1,0 +1,49 @@
+name: Bug report
+description: Report a reproducible Hookfly defect
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, webhook payloads, private URLs, or database contents. Use private vulnerability reporting for security issues.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Provide the image tag, digest, release, or full commit SHA.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Webhook ingestion
+        - Routing and configuration
+        - Dokploy deployment
+        - Management API
+        - Management UI
+        - Container or Compose deployment
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and the expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide sanitized steps and configuration using obvious fake values.
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Additional evidence
+      description: Add sanitized logs or screenshots only when they contain no sensitive data.

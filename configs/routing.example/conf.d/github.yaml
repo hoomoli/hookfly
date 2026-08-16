@@ -1,0 +1,8 @@
+kind: GitHubSources
+sources:
+  - id: github-example
+    secret: ${GITHUB_WEBHOOK_SECRET}
+    repositories:
+      - id: application
+        name: application
+        repository_id: 20001

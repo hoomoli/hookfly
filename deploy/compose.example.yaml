@@ -1,0 +1,75 @@
+services:
+  backend:
+    image: ${HOOKFLY_BACKEND_IMAGE:-ghcr.io/hoomoli/hookfly-backend:latest}
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      HOOKFLY_CONFIG: /etc/hookfly/hookfly.yaml
+      HOOKFLY_DB: /var/lib/hookfly/hookfly.db
+      HOOKFLY_PUBLIC_ADDR: :8080
+      HOOKFLY_ADMIN_ADDR: :8081
+      HOOKFLY_AUTH_MODE: ${HOOKFLY_AUTH_MODE:-oidc}
+      HOOKFLY_EXTERNAL_URL: ${HOOKFLY_EXTERNAL_URL:-https://webhook.chuandashow.com}
+      AUTHENTIK_ISSUER: ${AUTHENTIK_ISSUER:-}
+      AUTHENTIK_CLIENT_ID: ${AUTHENTIK_CLIENT_ID:-}
+      AUTHENTIK_CLIENT_SECRET: ${AUTHENTIK_CLIENT_SECRET:-}
+      AUTHENTIK_OAUTH_SCOPES: ${AUTHENTIK_OAUTH_SCOPES-openid,profile}
+      HOOKFLY_AUTH_ALLOWED_GROUPS: ${HOOKFLY_AUTH_ALLOWED_GROUPS-hookfly-users}
+      HOOKFLY_AUTH_SESSION_SECRET: ${HOOKFLY_AUTH_SESSION_SECRET:-}
+      GITLAB_TOKEN: ${GITLAB_TOKEN:-}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      DOKPLOY_API_KEY: ${DOKPLOY_API_KEY:-}
+    volumes:
+      - type: bind
+        source: ${HOOKFLY_CONFIG_DIR:-../configs}
+        target: /etc/hookfly
+        read_only: true
+        bind:
+          create_host_path: false
+      - hookfly-data:/var/lib/hookfly
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${HOOKFLY_PROXY_NETWORK:-dokploy-network}
+      - traefik.http.routers.hookfly-hooks.rule=Host(`${HOOKFLY_ROUTE_HOST:-webhook.chuandashow.com}`) && PathPrefix(`/hooks/`)
+      - traefik.http.routers.hookfly-hooks.entrypoints=${HOOKFLY_HTTPS_ENTRYPOINT:-websecure}
+      - traefik.http.routers.hookfly-hooks.tls=true
+      - traefik.http.routers.hookfly-hooks.tls.certresolver=${HOOKFLY_CERT_RESOLVER:-letsencrypt}
+      - traefik.http.routers.hookfly-hooks.priority=${HOOKFLY_HOOKS_ROUTER_PRIORITY:-100}
+      - traefik.http.routers.hookfly-hooks.service=hookfly-hooks
+      - traefik.http.services.hookfly-hooks.loadbalancer.server.port=8080
+    networks:
+      - private
+      - proxy
+
+  frontend:
+    image: ${HOOKFLY_FRONTEND_IMAGE:-ghcr.io/hoomoli/hookfly-frontend:latest}
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      HOOKFLY_ADMIN_UPSTREAM: http://backend:8081
+    depends_on:
+      backend:
+        condition: service_healthy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${HOOKFLY_PROXY_NETWORK:-dokploy-network}
+      - traefik.http.routers.hookfly.rule=Host(`${HOOKFLY_ROUTE_HOST:-webhook.chuandashow.com}`)
+      - traefik.http.routers.hookfly.entrypoints=${HOOKFLY_HTTPS_ENTRYPOINT:-websecure}
+      - traefik.http.routers.hookfly.tls=true
+      - traefik.http.routers.hookfly.tls.certresolver=${HOOKFLY_CERT_RESOLVER:-letsencrypt}
+      - traefik.http.routers.hookfly.priority=${HOOKFLY_ROUTER_PRIORITY:-1}
+      - traefik.http.routers.hookfly.service=hookfly
+      - traefik.http.services.hookfly.loadbalancer.server.port=8080
+    networks:
+      - private
+      - proxy
+
+volumes:
+  hookfly-data:
+
+networks:
+  private:
+    internal: true
+  proxy:
+    external: true
+    name: ${HOOKFLY_PROXY_NETWORK:-dokploy-network}

@@ -1,0 +1,60 @@
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+.npmrc
+.netrc
+*.key
+*.pem
+*.p12
+*.pfx
+*.credentials
+*.secret
+/secrets/
+/config.yaml
+/config.*.yaml
+!/config.example.yaml
+/configs/local*.yaml
+
+# Local agent instructions, logic lines, and skill artifacts
+/AGENT.md
+/AGENTS.md
+/agent.md
+/agents.md
+/HANDOFF.md
+/.agent-work/
+/.logic-lines/
+/.superpowers/
+/.agents/
+/.codex/
+/docs/superpowers/
+
+# Runtime data and generated output
+/data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.log
+/coverage/
+coverage.out
+*.test
+/dist/
+/tmp/
+/.tmp/
+/bin/
+
+# Frontend dependencies
+/web/node_modules/
+/web/dist/
+/web/tsconfig.tsbuildinfo
+/web/test-results/
+/web/playwright-report/
+/web/blob-report/
+
+# Editor and operating-system files
+.DS_Store
+.idea/
+.vscode/
+*.swp

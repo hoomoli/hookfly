@@ -1,0 +1,8 @@
+kind: Hookfly
+config_dir: conf.d
+history:
+  global_limit: 1000
+  default_repository_limit: 200
+polling:
+  interval: 1s
+  timeout: 30m

@@ -1,0 +1,8 @@
+kind: GitLabSources
+sources:
+  - id: gitlab-example
+    token: ${GITLAB_TOKEN}
+    repositories:
+      - id: application
+        name: application
+        project_id: 10001

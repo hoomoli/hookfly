@@ -1,0 +1,26 @@
+kind: Routes
+routes:
+  - id: deploy-gitlab-main
+    priority: 100
+    match:
+      source: gitlab-example
+      repository: application
+      event: pipeline
+      ref: main
+      status: success
+    action:
+      type: deploy
+      targets:
+        - production
+  - id: deploy-github-main
+    priority: 200
+    match:
+      source: github-example
+      repository: application
+      event: pipeline
+      ref: main
+      status: success
+    action:
+      type: deploy
+      targets:
+        - production

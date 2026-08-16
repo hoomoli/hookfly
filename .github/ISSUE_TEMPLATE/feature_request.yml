@@ -1,0 +1,32 @@
+name: Feature request
+description: Propose a focused improvement to Hookfly
+title: "feat: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What operator or contributor problem should Hookfly solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful behavior and its expected workflow.
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety and compatibility
+      description: Note effects on APIs, configuration, stored data, credentials, deployment requests, or upgrades.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe current workarounds or smaller alternatives.
