@@ -98,6 +98,95 @@ func TestDispatchUsesConfiguredComposeAndMarksEnqueued(t *testing.T) {
 	}
 }
 
+func TestDispatchHTTPAcceptsWithoutPollingAndRedactsCredential(t *testing.T) {
+	var gotBody map[string]any
+	var deliveryID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/deploy" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("X-API-Token") != "http-secret" || r.Header.Get("Idempotency-Key") != deliveryID {
+			t.Fatalf("headers = %#v", r.Header)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = io.WriteString(w, `{"token":"http-secret","state":"accepted"}`)
+	}))
+	defer server.Close()
+	s, db := openWorkerStore(t)
+	cfg := httpDispatcherConfig(server.URL)
+	eventID := ingestWorkerEvent(t, s, "http-accepted", time.UnixMilli(1000), workerDeliveries(t, cfg))
+	attemptID := attemptForEvent(t, db, eventID)
+	if err := db.QueryRow(`SELECT id FROM deliveries WHERE event_id = ?`, eventID).Scan(&deliveryID); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := NewDispatcher(workerManager(t, cfg, s), s, discardLogger(), func() time.Time { return time.UnixMilli(5000) })
+	worked, err := dispatcher.RunOnce(context.Background())
+	if err != nil || !worked {
+		t.Fatalf("RunOnce() = %v/%v", worked, err)
+	}
+	assertWorkerAttemptState(t, db, attemptID, "enqueued", "done")
+	var pollDue, deadline sql.NullInt64
+	var requestJSON, responseJSON []byte
+	if err := db.QueryRow(`SELECT poll_due_at, monitoring_deadline_at, request_json, response_json FROM delivery_attempts WHERE id = ?`, attemptID).Scan(&pollDue, &deadline, &requestJSON, &responseJSON); err != nil {
+		t.Fatal(err)
+	}
+	if pollDue.Valid || deadline.Valid || strings.Contains(string(requestJSON), "http-secret") || strings.Contains(string(responseJSON), "http-secret") {
+		t.Fatalf("poll/evidence = %#v/%#v/%s/%s", pollDue, deadline, requestJSON, responseJSON)
+	}
+	if gotBody["attempt_id"] != attemptID {
+		t.Fatalf("body = %#v", gotBody)
+	}
+}
+
+func TestDispatchHTTPFailureIsRetryable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer server.Close()
+	s, db := openWorkerStore(t)
+	cfg := httpDispatcherConfig(server.URL)
+	eventID := ingestWorkerEvent(t, s, "http-failed", time.UnixMilli(1000), workerDeliveries(t, cfg))
+	attemptID := attemptForEvent(t, db, eventID)
+	dispatcher := NewDispatcher(workerManager(t, cfg, s), s, discardLogger(), func() time.Time { return time.UnixMilli(5000) })
+	if worked, err := dispatcher.RunOnce(context.Background()); err != nil || !worked {
+		t.Fatalf("RunOnce() = %v/%v", worked, err)
+	}
+	assertWorkerAttemptState(t, db, attemptID, "failed", "not_started")
+	if got := domain.AllowedOperations(domain.TransportFailed, domain.DeploymentNotStarted); !reflect.DeepEqual(got, []domain.Operation{domain.OperationRetry}) {
+		t.Fatalf("AllowedOperations() = %#v", got)
+	}
+}
+
+func TestDispatchHTTPUncertainResultIsRetryableWithoutPolling(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connection, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = connection.Close()
+	}))
+	defer server.Close()
+	s, db := openWorkerStore(t)
+	cfg := httpDispatcherConfig(server.URL)
+	eventID := ingestWorkerEvent(t, s, "http-unknown", time.UnixMilli(1000), workerDeliveries(t, cfg))
+	attemptID := attemptForEvent(t, db, eventID)
+	dispatcher := NewDispatcher(workerManager(t, cfg, s), s, discardLogger(), func() time.Time { return time.UnixMilli(5000) })
+	if worked, err := dispatcher.RunOnce(context.Background()); err != nil || !worked {
+		t.Fatalf("RunOnce() = %v/%v", worked, err)
+	}
+	assertWorkerAttemptState(t, db, attemptID, "unknown", "unknown")
+	var pollDue, deadline sql.NullInt64
+	if err := db.QueryRow(`SELECT poll_due_at, monitoring_deadline_at FROM delivery_attempts WHERE id = ?`, attemptID).Scan(&pollDue, &deadline); err != nil {
+		t.Fatal(err)
+	}
+	if pollDue.Valid || deadline.Valid {
+		t.Fatalf("unexpected polling schedule = %#v/%#v", pollDue, deadline)
+	}
+}
+
 func TestDispatchPersistsSafeRequestEnvelopeBeforeDeploymentPOSTCompletes(t *testing.T) {
 	// Break caught: recording only after the POST returns, omitting the endpoint, or persisting the API key.
 	postStarted := make(chan struct{})
@@ -624,6 +713,17 @@ func dispatcherConfig(baseURL string, timeout *config.Duration) *config.Bundle {
 		DokployConnections: []config.DokployConnection{{ID: "dokploy", BaseURL: baseURL, APIKey: "startup-api-key"}},
 		Targets: []config.Target{{
 			ID: "production", Type: "dokploy", Connection: "dokploy", ResourceType: "compose", ResourceID: "configured-compose", PollTimeout: timeout,
+		}},
+	}
+}
+
+func httpDispatcherConfig(baseURL string) *config.Bundle {
+	return &config.Bundle{
+		Global:          config.Global{Polling: config.Polling{Interval: config.Duration{Duration: 2 * time.Second}, Timeout: config.Duration{Duration: 30 * time.Second}}},
+		HTTPConnections: []config.HTTPConnection{{ID: "admin", BaseURL: baseURL, AllowPrivateNetwork: true, Auth: config.HTTPAuthentication{Type: "api_key", Value: "http-secret", Header: "X-API-Token"}}},
+		Targets: []config.Target{{
+			ID: "production", Type: "http", Connection: "admin", Method: http.MethodPost, Path: "/api/deploy",
+			Body: &config.HTTPBody{Type: "json", Value: map[string]any{"attempt_id": "{{ attempt.id }}"}}, SuccessStatuses: []int{http.StatusAccepted},
 		}},
 	}
 }

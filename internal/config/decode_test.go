@@ -1,6 +1,7 @@
 package config
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -20,6 +21,99 @@ func TestDecodeDispatchesMultipleFilesOfOneKind(t *testing.T) {
 	}
 	if got, want := bundle.GitLabSources[0].Repositories[0].ExternalID, "10"; got != want {
 		t.Fatalf("GitLab ExternalID = %q, want %q", got, want)
+	}
+}
+
+func TestDecodeHTTPConnectionsAndTargets(t *testing.T) {
+	candidate := Candidate{
+		Global: source("/cfg/hookfly.yaml", globalYAML("conf.d")),
+		Resources: []SourceFile{
+			source("/cfg/conf.d/http-connections.yaml", `kind: HTTPConnections
+connections:
+  - id: application-admin
+    base_url: https://admin.example.invalid
+    auth:
+      type: api_key
+      value: ${ADMIN_TOKEN}
+      header: X-API-Token
+`),
+			source("/cfg/conf.d/http-targets.yaml", `kind: HTTPTargets
+targets:
+  - id: application-deploy
+    type: http
+    connection: application-admin
+    method: POST
+    path: /api/deploy
+    headers:
+      X-Deploy-Source: hookfly
+    body:
+      type: json
+      value:
+        ref: "{{ event.ref }}"
+        attempt_id: "{{ attempt.id }}"
+    success_statuses: [202]
+`),
+		},
+	}
+
+	bundle, err := Decode(candidate, func(name string) (string, bool) { return "http-secret", name == "ADMIN_TOKEN" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := bundle.HTTPConnections; len(got) != 1 || got[0].Auth.Value != "http-secret" || got[0].Auth.Header != "X-API-Token" {
+		t.Fatalf("HTTPConnections = %#v", got)
+	}
+	if got := bundle.Targets; len(got) != 1 || got[0].Method != "POST" || got[0].Path != "/api/deploy" || got[0].Headers["X-Deploy-Source"] != "hookfly" {
+		t.Fatalf("Targets = %#v", got)
+	}
+}
+
+func TestDecodeHTTPFormTargetWithQueryAndBearerAuthentication(t *testing.T) {
+	candidate := Candidate{
+		Global: source("/cfg/hookfly.yaml", globalYAML("conf.d")),
+		Resources: []SourceFile{
+			source("/cfg/conf.d/http-connections.yaml", `kind: HTTPConnections
+connections:
+  - id: application-admin
+    base_url: https://admin.example.invalid
+    auth:
+      type: bearer
+      value: ${ADMIN_TOKEN}
+`),
+			source("/cfg/conf.d/http-targets.yaml", `kind: HTTPTargets
+targets:
+  - id: application-deploy
+    type: http
+    connection: application-admin
+    method: POST
+    path: /api/deploy
+    query:
+      page: "2"
+      tag: [blue, green]
+    body:
+      type: form
+      value:
+        ref: "{{event.ref}}"
+        mode: release
+`),
+		},
+	}
+	bundle, err := Decode(candidate, func(name string) (string, bool) { return "bearer-token", name == "ADMIN_TOKEN" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateAndCanonicalize(bundle); err != nil {
+		t.Fatal(err)
+	}
+	if got := bundle.HTTPConnections[0].Auth; got.Type != "bearer" || got.Value != "bearer-token" || got.Header != "" {
+		t.Fatalf("authentication = %#v", got)
+	}
+	if got, want := bundle.Targets[0].Query["tag"], (HTTPStringList{"blue", "green"}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("query tag = %#v, want %#v", got, want)
+	}
+	body, ok := bundle.Targets[0].Body.Value.(map[string]HTTPStringList)
+	if !ok || !reflect.DeepEqual(body["ref"], HTTPStringList{"{{event.ref}}"}) {
+		t.Fatalf("form body = %#v", bundle.Targets[0].Body)
 	}
 }
 

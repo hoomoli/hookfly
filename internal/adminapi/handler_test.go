@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,6 +32,8 @@ type fakeStore struct {
 	notificationQuery store.NotificationQuery
 	notificationPage  store.NotificationPage
 	notificationErr   error
+	notifyCh          chan struct{}
+	listNotifications func(store.NotificationQuery) (store.NotificationPage, error)
 }
 
 func (f *fakeStore) Ready(context.Context) error { return f.readyErr }
@@ -50,7 +53,17 @@ func (f *fakeStore) GetEventDetail(context.Context, string) (store.EventDetail, 
 }
 func (f *fakeStore) ListNotifications(_ context.Context, query store.NotificationQuery) (store.NotificationPage, error) {
 	f.notificationQuery = query
+	if f.listNotifications != nil {
+		return f.listNotifications(query)
+	}
 	return f.notificationPage, f.notificationErr
+}
+
+func (f *fakeStore) SubscribeNotifications() (<-chan struct{}, func()) {
+	if f.notifyCh == nil {
+		f.notifyCh = make(chan struct{}, 1)
+	}
+	return f.notifyCh, func() {}
 }
 
 type fakeAttempts struct {
@@ -352,6 +365,156 @@ func TestNotificationsExposeCursorFeedAndValidateQuery(t *testing.T) {
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("%s = %d %s", path, rr.Code, rr.Body.String())
 		}
+	}
+}
+
+// streamRecorder synchronizes writes so a streaming handler running in its own
+// goroutine stays race-free under -race.
+type streamRecorder struct {
+	mu   sync.Mutex
+	body strings.Builder
+	head http.Header
+	code int
+}
+
+func newStreamRecorder() *streamRecorder {
+	return &streamRecorder{head: http.Header{}, code: http.StatusOK}
+}
+
+func (s *streamRecorder) Header() http.Header { return s.head }
+
+func (s *streamRecorder) WriteHeader(code int) {
+	s.mu.Lock()
+	s.code = code
+	s.mu.Unlock()
+}
+
+func (s *streamRecorder) Write(payload []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.body.Write(payload)
+}
+
+func (s *streamRecorder) Flush() {}
+
+func (s *streamRecorder) text() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.body.String()
+}
+
+func (s *streamRecorder) await(t *testing.T, marker string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(s.text(), marker) {
+		if time.Now().After(deadline) {
+			t.Fatalf("stream body missing %q: %q", marker, s.text())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func streamFact(id, cursor string) store.NotificationFact {
+	return store.NotificationFact{
+		ID: id, Cursor: cursor, Category: "deployment", Outcome: "success", EventID: "event-" + id,
+		DeliveryID: "delivery-" + id, TargetID: "api", Provider: "gitlab", SourceID: "gitlab-a", Repository: "app",
+		Summary: "Deployment succeeded", OccurredAt: time.Unix(2, 0).UTC(),
+	}
+}
+
+func serveStream(t *testing.T, handler http.Handler, request *http.Request) (*streamRecorder, context.CancelFunc, <-chan struct{}) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(request.Context())
+	recorder := newStreamRecorder()
+	done := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(recorder, request.WithContext(ctx))
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	return recorder, cancel, done
+}
+
+func TestNotificationsStreamPushesFactsOnSignalAndAdvancesCursor(t *testing.T) {
+	notify := make(chan struct{}, 1)
+	pages := make(chan store.NotificationPage, 4)
+	pages <- store.NotificationPage{}
+	pages <- store.NotificationPage{Items: []store.NotificationFact{streamFact("fact-a", "cursor-a")}, LatestCursor: "cursor-a"}
+	var mu sync.Mutex
+	queries := []string{}
+	storeFake := &fakeStore{
+		notifyCh: notify,
+		listNotifications: func(query store.NotificationQuery) (store.NotificationPage, error) {
+			mu.Lock()
+			queries = append(queries, query.After)
+			mu.Unlock()
+			return <-pages, nil
+		},
+	}
+	handler := New(Dependencies{Store: storeFake, Provider: auth.NoAuthProvider{}})
+	recorder, _, _ := serveStream(t, handler, httptest.NewRequest(http.MethodGet, "/api/v1/notifications/stream?after=cursor-old", nil))
+
+	notify <- struct{}{}
+	recorder.await(t, "id: cursor-a")
+	want := "id: cursor-a\nevent: fact\ndata: {\"id\":\"fact-a\",\"cursor\":\"cursor-a\",\"category\":\"deployment\",\"outcome\":\"success\",\"event_id\":\"event-fact-a\",\"delivery_id\":\"delivery-fact-a\",\"target_id\":\"api\",\"provider\":\"gitlab\",\"source_id\":\"gitlab-a\",\"repository\":\"app\",\"summary\":\"Deployment succeeded\",\"occurred_at\":\"1970-01-01T00:00:02Z\"}\n\n"
+	if !strings.Contains(recorder.text(), want) {
+		t.Fatalf("stream body = %q", recorder.text())
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("Content-Type = %q", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(queries) != 2 || queries[0] != "cursor-old" || queries[1] != "cursor-old" {
+		t.Fatalf("stream queries = %#v", queries)
+	}
+}
+
+func TestNotificationsStreamResumesFromLastEventID(t *testing.T) {
+	pages := make(chan store.NotificationPage, 1)
+	pages <- store.NotificationPage{}
+	var mu sync.Mutex
+	queries := []string{}
+	storeFake := &fakeStore{
+		listNotifications: func(query store.NotificationQuery) (store.NotificationPage, error) {
+			mu.Lock()
+			queries = append(queries, query.After)
+			mu.Unlock()
+			return <-pages, nil
+		},
+	}
+	handler := New(Dependencies{Store: storeFake, Provider: auth.NoAuthProvider{}})
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/notifications/stream?after=cursor-stale", nil)
+	request.Header.Set("Last-Event-ID", "cursor-live")
+	serveStream(t, handler, request)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		captured := append([]string(nil), queries...)
+		mu.Unlock()
+		if len(captured) == 1 {
+			if captured[0] != "cursor-live" {
+				t.Fatalf("resume query = %q", captured[0])
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stream queries = %#v", captured)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestNotificationsStreamRejectsUnknownQueryParameters(t *testing.T) {
+	handler := New(Dependencies{Store: &fakeStore{}, Provider: auth.NoAuthProvider{}})
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v1/notifications/stream?limit=5", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("stream = %d %s", rr.Code, rr.Body.String())
 	}
 }
 

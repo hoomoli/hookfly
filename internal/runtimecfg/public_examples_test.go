@@ -13,9 +13,10 @@ func TestPublicExamplesCompile(t *testing.T) {
 	configRoot := filepath.Join("..", "..", "configs")
 	lookup := func(name string) (string, bool) {
 		value, ok := map[string]string{
-			"GITLAB_TOKEN":          "test-gitlab-token",
-			"GITHUB_WEBHOOK_SECRET": "test-github-secret",
-			"DOKPLOY_API_KEY":       "test-dokploy-key",
+			"GITLAB_TOKEN":            "test-gitlab-token",
+			"GITHUB_WEBHOOK_SECRET":   "test-github-secret",
+			"DOKPLOY_API_KEY":         "test-dokploy-key",
+			"APPLICATION_ADMIN_TOKEN": "test-application-admin-token",
 		}[name]
 		return value, ok
 	}
@@ -30,10 +31,10 @@ func TestPublicExamplesCompile(t *testing.T) {
 			path: filepath.Join(configRoot, "hookfly.yaml"),
 		},
 		{
-			name:        "routing example compiles both providers to one target",
+			name:        "routing example compiles both providers and deployment target types",
 			path:        filepath.Join(configRoot, "routing.example", "hookfly.yaml"),
 			wantSources: 2,
-			wantTargets: 1,
+			wantTargets: 2,
 			wantRoutes:  2,
 		},
 	} {
@@ -147,9 +148,10 @@ func publicExampleHeader(name, value string) http.Header {
 func publicExampleBundle() (*config.Bundle, error) {
 	lookup := func(name string) (string, bool) {
 		value, ok := map[string]string{
-			"GITLAB_TOKEN":          "test-gitlab-token",
-			"GITHUB_WEBHOOK_SECRET": "test-github-secret",
-			"DOKPLOY_API_KEY":       "test-dokploy-key",
+			"GITLAB_TOKEN":            "test-gitlab-token",
+			"GITHUB_WEBHOOK_SECRET":   "test-github-secret",
+			"DOKPLOY_API_KEY":         "test-dokploy-key",
+			"APPLICATION_ADMIN_TOKEN": "test-application-admin-token",
 		}[name]
 		return value, ok
 	}

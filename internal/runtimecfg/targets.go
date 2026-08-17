@@ -90,6 +90,9 @@ func (m *Manager) TargetInventory(ctx context.Context) TargetInventory {
 	}
 	sort.Strings(connectionIDs)
 	for _, id := range connectionIDs {
+		if connections[id] == nil || connections[id].kind != ConnectionTypeDokploy {
+			continue
+		}
 		discovered, err := connections[id].discoverResources(ctx)
 		if err != nil {
 			failed[id] = true
@@ -104,6 +107,12 @@ func (m *Manager) TargetInventory(ctx context.Context) TargetInventory {
 	for _, target := range targets {
 		item := TargetInventoryItem{ID: target.ID, ConnectionID: target.ConnectionID, ResourceType: target.ResourceType, ResourceID: target.ComposeID, Condition: TargetConditionUnavailable}
 		item.Containers = []TargetContainer{}
+		if target.Type == ConnectionTypeHTTP {
+			item.Name = target.ID
+			item.Condition = TargetConditionAvailable
+			result.Targets = append(result.Targets, item)
+			continue
+		}
 		if failed[target.ConnectionID] {
 			item.Condition = TargetConditionRefreshFailed
 		} else if resource, found := resources[target.ConnectionID][target.ResourceType+"\x00"+target.ComposeID]; found {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/hoomoli/hookfly/internal/dokploy"
+	"github.com/hoomoli/hookfly/internal/httptarget"
 )
 
 // BindingStatus is the safe compatibility result for a historical delivery target.
@@ -27,33 +28,46 @@ func (g *Generation) ResolveTarget(targetID string, snapshot []byte) (*Target, B
 	if !found || len(snapshot) == 0 {
 		return nil, BindingUnavailable
 	}
-	var historical struct {
-		BindingVersion *int   `json:"binding_version"`
-		ID             string `json:"id"`
-		Type           string `json:"type"`
-		ResourceType   string `json:"resource_type"`
-		ResourceID     string `json:"resource_id"`
-		Connection     struct {
-			ID      string `json:"id"`
-			BaseURL string `json:"base_url"`
-		} `json:"connection"`
+	var versionHeader struct {
+		BindingVersion *int `json:"binding_version"`
 	}
+	if err := json.Unmarshal(snapshot, &versionHeader); err != nil {
+		return nil, BindingUnavailable
+	}
+	if versionHeader.BindingVersion == nil {
+		return nil, BindingUnavailable
+	}
+	var historical targetSnapshot
 	if err := json.Unmarshal(snapshot, &historical); err != nil {
 		return nil, BindingUnavailable
 	}
-	if historical.BindingVersion == nil {
+	version := *versionHeader.BindingVersion
+	if version != current.BindingVersion || historical.ID != targetID || historical.Type == "" || historical.Connection.BaseURL == "" || historical.Type != current.Type {
 		return nil, BindingUnavailable
 	}
-	version := *historical.BindingVersion
-	if version != current.BindingVersion || historical.ID != targetID || historical.Type == "" ||
-		historical.ResourceType == "" || historical.ResourceID == "" || historical.Connection.BaseURL == "" {
+	var fingerprint string
+	switch historical.Type {
+	case "dokploy":
+		if historical.ResourceType == "" || historical.ResourceID == "" {
+			return nil, BindingUnavailable
+		}
+		canonical, err := dokploy.CanonicalBaseURL(historical.Connection.BaseURL)
+		if err != nil {
+			return nil, BindingUnavailable
+		}
+		fingerprint = bindingFingerprint(version, historical.Type, historical.ResourceType, canonical, historical.ResourceID)
+	case "http":
+		if historical.HTTP == nil || historical.Connection.ID == "" {
+			return nil, BindingUnavailable
+		}
+		canonical, err := httptarget.CanonicalBaseURL(historical.Connection.BaseURL)
+		if err != nil {
+			return nil, BindingUnavailable
+		}
+		fingerprint = httpBindingFingerprint(version, historical.Connection.ID, canonical, *historical.HTTP)
+	default:
 		return nil, BindingUnavailable
 	}
-	canonical, err := dokploy.CanonicalBaseURL(historical.Connection.BaseURL)
-	if err != nil {
-		return nil, BindingUnavailable
-	}
-	fingerprint := bindingFingerprint(version, historical.Type, historical.ResourceType, canonical, historical.ResourceID)
 	if fingerprint != current.Fingerprint {
 		return nil, BindingChanged
 	}

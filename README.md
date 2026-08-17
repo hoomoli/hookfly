@@ -4,11 +4,11 @@ Hookfly receives GitLab and GitHub webhooks, records their routing history in SQ
 
 ## Configure Hookfly
 
-`configs/hookfly.yaml` is an executable starter with no runtime resources. It is valid when `conf.d` is absent or empty. `configs/routing.example/` is the complete fake reference: GitLab and GitHub sources, one Dokploy connection, one shared `production` target, and two deploy routes.
+`configs/hookfly.yaml` is an executable starter with no runtime resources. It is valid when `conf.d` is absent or empty. `configs/routing.example/` is the complete fake reference: GitLab and GitHub sources, a Dokploy Compose target, an HTTP management target, and two deploy routes.
 
 The global file is always `hookfly.yaml`. Resource documents live only in direct, regular `conf.d/*.yaml` files. They merge as one configuration set: filenames have no precedence or ordering semantics. A candidate is rejected for duplicate IDs, unknown fields or kinds, invalid references, and equal-priority overlapping routes. The complete example uses distinct explicit route priorities.
 
-Use protected environment injection for the mandatory nonempty credentials: `GITLAB_TOKEN`, `GITHUB_WEBHOOK_SECRET`, and `DOKPLOY_API_KEY`. Keep values out of Git, URLs, command lines, and webhook payloads. The checked-in complete example contains only `${...}` references; copy the directory outside the repository before adding real identifiers and environment values.
+Use protected environment injection for the mandatory nonempty credentials: `GITLAB_TOKEN`, `GITHUB_WEBHOOK_SECRET`, `DOKPLOY_API_KEY`, and `APPLICATION_ADMIN_TOKEN`. Keep values out of Git, URLs, command lines, and webhook payloads. The checked-in complete example contains only `${...}` references; copy the directory outside the repository before adding real identifiers and environment values.
 
 ```sh
 cp .env.example .env
@@ -71,6 +71,14 @@ For each matched deployment route, Hookfly first reads the Compose deployment hi
 Dokploy endpoint and payload schemas are version-sensitive; Hookfly documents and uses only this deployment behavior, not unverified fields from a different Dokploy installation. This direct request does not depend on Git Watch Paths. Until Hookfly binds a deployment ID, it serializes sends that resolve to the same remote Compose resource. If the stored cursor was pruned or multiple post-cursor deployments cannot be distinguished safely, Hookfly marks the outcome unknown instead of guessing or automatically repeating the POST.
 
 Hookfly redeploys the image references already present in the Dokploy Compose configuration. It does not copy a webhook revision into Compose or environment variables, and it does not replace tags or digests. Publish or update the intended image reference before the successful provider event triggers Hookfly.
+
+## Configure direct HTTP targets
+
+Use `HTTPConnections` for one fixed HTTP(S) origin and typed authentication, then use `HTTPTargets` for one origin-relative `GET`, `POST`, `PUT`, `PATCH`, or `DELETE` request. Connections support `bearer` and `api_key` authentication; only `auth.value` may reference a protected environment variable. Private, loopback, and link-local targets require `allow_private_network: true` on that connection.
+
+Each HTTP target may omit `query`, `headers`, and `body`. A body uses `type: json`, `type: form`, or `type: raw`; JSON and form bodies infer their standard content type, while `content_type` may override it or set it for raw content. Query and form values accept either one scalar or a sequence for repeated names. Non-secret headers, query values, and body values may interpolate normalized event fields and `{{ attempt.id }}`; they must not contain environment references. Hookfly sends the stable delivery ID as `Idempotency-Key`, so Retry reaches an idempotent management endpoint with the same key.
+
+Direct HTTP targets do not poll. A configured successful response status records the action as accepted, not as an observed deployment success. Connection errors and rejected HTTP responses offer Retry. A response that may have been lost is marked unknown and also offers Retry, but the remote action may already have run. HTTP targets reject redirects and do not permit a target to select a different host, arbitrary authentication header, or arbitrary template expression.
 
 ## Reload and deployment boundaries
 

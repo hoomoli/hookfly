@@ -30,6 +30,7 @@ type queryStore interface {
 	ListEvents(context.Context, store.EventQuery) (store.EventPage, error)
 	GetEventDetail(context.Context, string) (store.EventDetail, error)
 	ListNotifications(context.Context, store.NotificationQuery) (store.NotificationPage, error)
+	SubscribeNotifications() (<-chan struct{}, func())
 	ClearHistory(context.Context) (store.ClearHistoryResult, error)
 }
 
@@ -77,6 +78,7 @@ func New(dependencies Dependencies) http.Handler {
 	mux.Handle("GET /api/v1/events/{event_id}", h.protected(auth.PermissionEventsRead, http.HandlerFunc(h.eventDetail)))
 	mux.Handle("DELETE /api/v1/events", h.protectedUnsafe(auth.PermissionEventsDelete, http.HandlerFunc(h.clearHistory)))
 	mux.Handle("GET /api/v1/notifications", h.protected(auth.PermissionEventsRead, http.HandlerFunc(h.notifications)))
+	mux.Handle("GET /api/v1/notifications/stream", h.protected(auth.PermissionEventsRead, http.HandlerFunc(h.notificationsStream)))
 	mux.Handle("POST /api/v1/deliveries/{delivery_id}/attempts", h.protectedUnsafe(auth.PermissionDeploymentsRetry, http.HandlerFunc(h.createAttempt)))
 	mux.Handle("GET /api/v1/config/status", h.protected(auth.PermissionEventsRead, http.HandlerFunc(h.configStatus)))
 	mux.Handle("POST /api/v1/config/reload", h.protectedUnsafe(auth.PermissionConfigReload, http.HandlerFunc(h.reloadConfig)))
@@ -138,22 +140,103 @@ func (h *handler) notifications(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]notificationResponse, 0, len(page.Items))
 	for _, fact := range page.Items {
-		item := notificationResponse{
-			ID: fact.ID, Cursor: fact.Cursor, Category: fact.Category, Outcome: fact.Outcome,
-			EventID: fact.EventID, Provider: fact.Provider, SourceID: fact.SourceID, Repository: fact.Repository, Summary: fact.Summary, OccurredAt: formatTime(fact.OccurredAt),
-		}
-		if fact.DeliveryID != "" {
-			item.DeliveryID = &fact.DeliveryID
-		}
-		if fact.TargetID != "" {
-			item.TargetID = &fact.TargetID
-		}
-		items = append(items, item)
+		items = append(items, toNotificationResponse(fact))
 	}
 	writeJSON(w, http.StatusOK, struct {
 		Items        []notificationResponse `json:"items"`
 		LatestCursor string                 `json:"latest_cursor"`
 	}{Items: items, LatestCursor: page.LatestCursor})
+}
+
+// notificationsStream serves the notification feed as server-sent events. The
+// client baselines through the REST feed, then opens this stream with its
+// cursor; the server pushes newer facts as they are committed and re-checks on
+// every heartbeat so a missed wake-up only delays delivery.
+func (h *handler) notificationsStream(w http.ResponseWriter, r *http.Request) {
+	if !h.storeAvailable(w) {
+		return
+	}
+	values := r.URL.Query()
+	for key := range values {
+		if key != "after" {
+			writeError(w, http.StatusBadRequest, "invalid_query", "invalid query parameters")
+			return
+		}
+	}
+	after, _, err := singleValue(values, "after")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_query", "invalid query parameters")
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "service unavailable")
+		return
+	}
+	cursor, resumed := after, false
+	if lastEventID := r.Header.Get("Last-Event-ID"); lastEventID != "" {
+		cursor, resumed = lastEventID, true
+	}
+	load := func() (store.NotificationPage, error) {
+		return h.dependencies.Store.ListNotifications(r.Context(), store.NotificationQuery{After: cursor, Limit: 100})
+	}
+	page, err := load()
+	if errors.Is(err, store.ErrInvalidNotificationCursor) && resumed {
+		cursor, resumed = "", false
+		page, err = load()
+	}
+	if errors.Is(err, store.ErrInvalidNotificationCursor) {
+		writeError(w, http.StatusBadRequest, "invalid_query", "invalid query parameters")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "service unavailable")
+		return
+	}
+	header := w.Header()
+	header.Set("Content-Type", "text/event-stream")
+	header.Set("Cache-Control", "no-store")
+	header.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	changes, unsubscribe := h.dependencies.Store.SubscribeNotifications()
+	defer unsubscribe()
+	heartbeat := time.NewTicker(25 * time.Second)
+	defer heartbeat.Stop()
+	first := true
+	for {
+		if first && cursor == "" {
+			// A fresh stream starts from the current tail instead of replaying history.
+			cursor = page.LatestCursor
+		} else {
+			for _, fact := range page.Items {
+				payload, err := json.Marshal(toNotificationResponse(fact))
+				if err != nil {
+					continue
+				}
+				if _, err := fmt.Fprintf(w, "id: %s\nevent: fact\ndata: %s\n\n", fact.Cursor, payload); err != nil {
+					return
+				}
+				cursor = fact.Cursor
+			}
+		}
+		first = false
+		flusher.Flush()
+		select {
+		case <-r.Context().Done():
+			return
+		case <-changes:
+		case <-heartbeat.C:
+			if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+		page, err = load()
+		if err != nil {
+			// Mid-stream failures end the response; EventSource reconnects and resumes.
+			return
+		}
+	}
 }
 
 func (h *handler) connections(w http.ResponseWriter, _ *http.Request) {
@@ -628,6 +711,20 @@ type notificationResponse struct {
 	Repository string  `json:"repository"`
 	Summary    string  `json:"summary"`
 	OccurredAt string  `json:"occurred_at"`
+}
+
+func toNotificationResponse(fact store.NotificationFact) notificationResponse {
+	item := notificationResponse{
+		ID: fact.ID, Cursor: fact.Cursor, Category: fact.Category, Outcome: fact.Outcome,
+		EventID: fact.EventID, Provider: fact.Provider, SourceID: fact.SourceID, Repository: fact.Repository, Summary: fact.Summary, OccurredAt: formatTime(fact.OccurredAt),
+	}
+	if fact.DeliveryID != "" {
+		item.DeliveryID = &fact.DeliveryID
+	}
+	if fact.TargetID != "" {
+		item.TargetID = &fact.TargetID
+	}
+	return item
 }
 
 func publicEvent(item store.EventSummary, canRetry bool) eventResponse {

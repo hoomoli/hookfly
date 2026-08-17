@@ -2,23 +2,69 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultNotificationState, NOTIFICATION_STORAGE_KEY } from "../notifications";
 import { i18n } from "../i18n";
-import type { NotificationFact, Repository } from "../types";
+import type { NotificationFact, NotificationFeed, Repository } from "../types";
 import { useNotifications } from "./useNotifications";
-import type { NotificationFeed } from "../types";
 
 const feeds: NotificationFeed[] = [];
 const deferredFeeds: Array<Promise<NotificationFeed>> = [];
+const feedErrors: Error[] = [];
 const requestedCursors: Array<string | undefined> = [];
+
+class FakeStream {
+  static instances: FakeStream[] = [];
+  readonly after: string | undefined;
+  closed = false;
+  onopen: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  private readonly factListeners = new Set<(event: MessageEvent<string>) => void>();
+
+  constructor(after?: string) {
+    this.after = after;
+    FakeStream.instances.push(this);
+  }
+
+  addEventListener(type: string, listener: (event: MessageEvent<string>) => void) {
+    if (type === "fact") this.factListeners.add(listener);
+  }
+
+  removeEventListener(type: string, listener: (event: MessageEvent<string>) => void) {
+    if (type === "fact") this.factListeners.delete(listener);
+  }
+
+  close() {
+    this.closed = true;
+  }
+
+  open() {
+    this.onopen?.();
+  }
+
+  fail() {
+    this.onerror?.();
+  }
+
+  emit(fact: NotificationFact) {
+    const event = { data: JSON.stringify(fact) } as MessageEvent<string>;
+    for (const listener of this.factListeners) listener(event);
+  }
+}
 
 vi.mock("../api", () => ({
   listNotifications: vi.fn(async (after?: string) => {
     requestedCursors.push(after);
+    const error = feedErrors.shift();
+    if (error) throw error;
     return deferredFeeds.shift() ?? feeds.shift() ?? { items: [], latest_cursor: "" };
   }),
+  openNotificationStream: vi.fn((after?: string) => new FakeStream(after) as unknown as EventSource),
 }));
 
+function fact(id: string, cursor = id): NotificationFact {
+  return { id, cursor, category: "deployment", outcome: "success", event_id: `event-${id}`, delivery_id: `delivery-${id}`, target_id: `target-${id}`, repository: "app", summary: "Deployment succeeded", occurred_at: "2026-08-12T00:00:00Z" };
+}
+
 function feed(id: string, cursor = id): NotificationFeed {
-  return { latest_cursor: cursor, items: id ? [{ id, cursor, category: "deployment", outcome: "success", event_id: `event-${id}`, delivery_id: `delivery-${id}`, target_id: `target-${id}`, repository: "app", summary: "Deployment succeeded", occurred_at: "2026-08-12T00:00:00Z" }] : [] };
+  return { latest_cursor: cursor, items: id ? [fact(id, cursor)] : [] };
 }
 
 function pushFact(id: string, repository: string): NotificationFact {
@@ -27,28 +73,55 @@ function pushFact(id: string, repository: string): NotificationFact {
 
 const appRepository: Repository = { provider: "github", source_id: "github-a", id: "app", name: "app" };
 
-describe("useNotifications", () => {
-  beforeEach(() => { localStorage.clear(); feeds.length = 0; deferredFeeds.length = 0; requestedCursors.length = 0; });
-  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+function latestStream(): FakeStream {
+  const stream = FakeStream.instances[FakeStream.instances.length - 1];
+  expect(stream).toBeDefined();
+  return stream;
+}
 
-  it("establishes a baseline without replay and appends later facts once", async () => {
-    feeds.push(feed("old", "old"), feed("new", "new"), feed("new", "new"));
-    const { result } = renderHook(() => useNotifications(() => undefined, 100));
+describe("useNotifications", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    feeds.length = 0;
+    deferredFeeds.length = 0;
+    feedErrors.length = 0;
+    requestedCursors.length = 0;
+    FakeStream.instances.length = 0;
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("establishes a baseline without replay and appends pushed facts once", async () => {
+    feeds.push(feed("old", "old"));
+    const { result } = renderHook(() => useNotifications(() => undefined));
     await waitFor(() => expect(result.current.state.cursor).toBe("old"));
     expect(result.current.state.items).toEqual([]);
-    await waitFor(() => expect(result.current.state.items.map((item) => item.id)).toEqual(["new"]));
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(FakeStream.instances).toHaveLength(1);
+    expect(latestStream().after).toBe("old");
+
+    act(() => { latestStream().emit(fact("new", "new")); });
+    act(() => { latestStream().emit(fact("new", "new")); });
+
     expect(result.current.state.items.map((item) => item.id)).toEqual(["new"]);
+    expect(result.current.state.cursor).toBe("new");
   });
 
   it("does not skip the first fact after an empty baseline", async () => {
-    feeds.push(feed("", ""), feed("first", "first"));
-    const { result } = renderHook(() => useNotifications(() => undefined, 100));
+    feeds.push(feed("", ""));
+    const { result } = renderHook(() => useNotifications(() => undefined));
     await waitFor(() => expect(result.current.state.initialized).toBe(true));
-    await waitFor(() => expect(result.current.state.items.map((item) => item.id)).toEqual(["first"]));
+    expect(FakeStream.instances).toHaveLength(1);
+    expect(latestStream().after).toBeUndefined();
+
+    act(() => { latestStream().emit(fact("first", "first")); });
+
+    expect(result.current.state.items.map((item) => item.id)).toEqual(["first"]);
   });
 
-  it("requests system permission only from enable and emits future notifications", async () => {
+  it("requests system permission only from enable and notifies about pushed facts", async () => {
     const created: Array<{ title: string; options?: NotificationOptions }> = [];
     const requestPermission = vi.fn(async () => "granted" as NotificationPermission);
     class FakeNotification {
@@ -59,20 +132,22 @@ describe("useNotifications", () => {
     }
     vi.stubGlobal("Notification", FakeNotification);
     Object.defineProperty(window, "isSecureContext", { configurable: true, value: true });
-    feeds.push(feed("", "base"), feed("system", "system"));
+    feeds.push(feed("", "base"));
     const open = vi.fn();
-    const { result } = renderHook(() => useNotifications(open, 100));
+    const { result } = renderHook(() => useNotifications(open));
     await waitFor(() => expect(result.current.state.cursor).toBe("base"));
     expect(requestPermission).not.toHaveBeenCalled();
     await act(async () => { await result.current.enableSystemNotifications(); });
     FakeNotification.permission = "granted";
     expect(requestPermission).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect(created).toHaveLength(1));
-    expect(created[0]).toEqual({ title: "#app · Deployment · Success", options: { body: "Deployment succeeded", tag: "system" } });
+
+    act(() => { latestStream().emit(fact("system", "system")); });
+
+    expect(created).toEqual([{ title: "#app · Deployment · Success", options: { body: "Deployment succeeded", tag: "system" } }]);
   });
 
   it("uses the configured repository name, current language, status, and commit message", async () => {
-    await i18n.changeLanguage("zh-CN");
+	await i18n.changeLanguage("en");
     const created: Array<{ title: string; options?: NotificationOptions }> = [];
     class FakeNotification {
       static permission: NotificationPermission = "granted";
@@ -97,12 +172,12 @@ describe("useNotifications", () => {
     feeds.push({ latest_cursor: "failure", items: facts });
     const repositories: Repository[] = [{ provider: "gitlab", source_id: "gitlab-a", id: "client-dist", name: "gop-client-dist" }];
 
-    renderHook(() => useNotifications(() => undefined, 60_000, repositories));
+    renderHook(() => useNotifications(() => undefined, repositories));
 
     await waitFor(() => expect(created).toEqual([
       { title: "#gop-client-dist · Push", options: { body: "feat: publish assets", tag: "push" } },
-      { title: "#gop-client-dist · \u6d41\u6c34\u7ebf · \u6210\u529f", options: { body: "fix: verify release", tag: "success" } },
-      { title: "#gop-client-dist · \u6d41\u6c34\u7ebf · \u5931\u8d25", options: { body: "deploy(web-mobile): sync build to 1135", tag: "failure" } },
+      { title: "#gop-client-dist · Pipeline · Success", options: { body: "fix: verify release", tag: "success" } },
+      { title: "#gop-client-dist · Pipeline · Failed", options: { body: "deploy(web-mobile): sync build to 1135", tag: "failure" } },
     ]));
   });
 
@@ -114,8 +189,8 @@ describe("useNotifications", () => {
     vi.stubGlobal("Notification", FakeNotification);
     Object.defineProperty(window, "isSecureContext", { configurable: true, value: true });
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
-    deferredFeeds.push(new Promise(() => undefined), new Promise(() => undefined));
-    const { result } = renderHook(() => useNotifications(() => undefined, 60_000));
+    deferredFeeds.push(new Promise(() => undefined));
+    const { result } = renderHook(() => useNotifications(() => undefined));
 
     expect(result.current.systemState).toBe("default");
     FakeNotification.permission = "denied";
@@ -133,7 +208,7 @@ describe("useNotifications", () => {
     vi.stubGlobal("Notification", FakeNotification);
     Object.defineProperty(window, "isSecureContext", { configurable: true, value: true });
     deferredFeeds.push(new Promise(() => undefined));
-    const { result } = renderHook(() => useNotifications(() => undefined, 60_000));
+    const { result } = renderHook(() => useNotifications(() => undefined));
 
     expect(result.current.systemState).toBe("denied");
     FakeNotification.permission = "granted";
@@ -154,7 +229,7 @@ describe("useNotifications", () => {
     const stored = defaultNotificationState();
     localStorage.setItem(NOTIFICATION_STORAGE_KEY, JSON.stringify({ ...stored, initialized: true, system_enabled: true }));
     deferredFeeds.push(new Promise(() => undefined));
-    const { result } = renderHook(() => useNotifications(() => undefined, 60_000));
+    const { result } = renderHook(() => useNotifications(() => undefined));
 
     act(() => {
       result.current.sendTestSystemNotification("Hookfly test", "Notifications can reach this device.");
@@ -186,7 +261,7 @@ describe("useNotifications", () => {
     }));
     feeds.push({ latest_cursor: "next", items: [pushFact("app-push", "app"), pushFact("other-push", "other")] });
 
-    const { result } = renderHook(() => useNotifications(() => undefined, 100));
+    const { result } = renderHook(() => useNotifications(() => undefined));
 
     await waitFor(() => expect(result.current.state.items.map((item) => item.id)).toEqual(["app-push"]));
     expect(result.current.unreadCount).toBe(1);
@@ -213,7 +288,7 @@ describe("useNotifications", () => {
     }));
     let resolveFeed!: (feed: NotificationFeed) => void;
     deferredFeeds.push(new Promise((resolve) => { resolveFeed = resolve; }));
-    const { result } = renderHook(() => useNotifications(() => undefined, 60_000));
+    const { result } = renderHook(() => useNotifications(() => undefined));
 
     act(() => { result.current.setStatusEnabled("push.received", false, appRepository); });
     await act(async () => { resolveFeed({ latest_cursor: "next", items: [pushFact("app-push", "app")] }); });
@@ -224,7 +299,7 @@ describe("useNotifications", () => {
     expect(created).toEqual([]);
   });
 
-  it("ignores a pre-clear feed and restarts polling from the empty cursor", async () => {
+  it("ignores a pre-clear feed and restarts the stream from the empty cursor", async () => {
     const created: Array<{ title: string; options?: NotificationOptions }> = [];
     class FakeNotification {
       static permission: NotificationPermission = "granted";
@@ -247,7 +322,7 @@ describe("useNotifications", () => {
       new Promise((resolve) => { resolveOld = resolve; }),
       new Promise((resolve) => { resolveFresh = resolve; }),
     );
-    const { result } = renderHook(() => useNotifications(() => undefined, 60_000));
+    const { result } = renderHook(() => useNotifications(() => undefined));
 
     act(() => { result.current.clearHistory(); });
     await act(async () => { resolveOld(feed("stale", "stale-cursor")); });
@@ -258,12 +333,15 @@ describe("useNotifications", () => {
     expect(created).toEqual([]);
     expect(JSON.parse(localStorage.getItem(NOTIFICATION_STORAGE_KEY) ?? "{}")).toMatchObject({ cursor: "", items: [], unread_ids: [] });
     await waitFor(() => expect(requestedCursors).toEqual(["old-cursor", undefined]));
+    expect(FakeStream.instances).toHaveLength(0);
 
     await act(async () => { resolveFresh(feed("fresh", "fresh-cursor")); });
     await waitFor(() => expect(result.current.state.items.map((item) => item.id)).toEqual(["fresh"]));
     expect(result.current.state.cursor).toBe("fresh-cursor");
     expect(result.current.unreadCount).toBe(1);
     expect(created).toEqual([{ title: "#app · Deployment · Success", options: { body: "Deployment succeeded", tag: "fresh" } }]);
+    expect(FakeStream.instances).toHaveLength(1);
+    expect(latestStream().after).toBe("fresh-cursor");
   });
 
   it("does not repeat a system notification for a fact already retained", async () => {
@@ -287,15 +365,61 @@ describe("useNotifications", () => {
     }));
     feeds.push({ latest_cursor: "next", items: [pushFact("retained-push", "app")] });
 
-    const { result } = renderHook(() => useNotifications(() => undefined, 60_000));
+    const { result } = renderHook(() => useNotifications(() => undefined));
 
     await waitFor(() => expect(result.current.state.cursor).toBe("next"));
     expect(result.current.state.items.map((item) => item.id)).toEqual(["retained-push"]);
     expect(created).toEqual([]);
   });
 
+  it("retries the baseline with backoff after a failure and then opens the stream", async () => {
+    vi.useFakeTimers();
+    try {
+      feedErrors.push(new Error("boom"));
+      feeds.push(feed("ok", "ok"));
+      const { result } = renderHook(() => useNotifications(() => undefined));
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(result.current.error?.message).toBe("boom");
+      expect(FakeStream.instances).toHaveLength(0);
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(4_999); });
+      expect(FakeStream.instances).toHaveLength(0);
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(result.current.error).toBeNull();
+      expect(result.current.state.cursor).toBe("ok");
+      expect(FakeStream.instances).toHaveLength(1);
+      expect(latestStream().after).toBe("ok");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports stream errors and clears them when the stream reopens", async () => {
+    feeds.push(feed("base", "base"));
+    const { result } = renderHook(() => useNotifications(() => undefined));
+    await waitFor(() => expect(FakeStream.instances).toHaveLength(1));
+
+    act(() => { latestStream().fail(); });
+    expect(result.current.error?.message).toBe("Notification feed failed");
+
+    act(() => { latestStream().open(); });
+    expect(result.current.error).toBeNull();
+  });
+
+  it("closes the stream when unmounted", async () => {
+    feeds.push(feed("base", "base"));
+    const { unmount } = renderHook(() => useNotifications(() => undefined));
+    await waitFor(() => expect(FakeStream.instances).toHaveLength(1));
+
+    unmount();
+
+    expect(latestStream().closed).toBe(true);
+  });
+
   it("persists and resets repository-specific notification settings", async () => {
-    const { result } = renderHook(() => useNotifications(() => undefined, 60_000));
+    const { result } = renderHook(() => useNotifications(() => undefined));
     await waitFor(() => expect(result.current.state.initialized).toBe(true));
 
     act(() => { result.current.setStatusEnabled("push.received", true, appRepository); });

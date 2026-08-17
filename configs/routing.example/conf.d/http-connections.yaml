@@ -1,0 +1,8 @@
+kind: HTTPConnections
+connections:
+  - id: application-admin-example
+    base_url: https://admin.example.invalid
+    auth:
+      type: api_key
+      value: ${APPLICATION_ADMIN_TOKEN}
+      header: X-API-Token

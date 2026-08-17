@@ -69,6 +69,7 @@ func (s *Store) Ingest(ctx context.Context, command domain.IngestCommand) (domai
 	if err := tx.Commit(); err != nil {
 		return domain.IngestResult{}, fmt.Errorf("commit ingest: %w", err)
 	}
+	s.notifyChanged()
 	return domain.IngestResult{EventID: eventID}, nil
 }
 

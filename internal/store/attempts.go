@@ -111,6 +111,7 @@ func (s *Store) ApplyManualUpdate(ctx context.Context, update ManualUpdate) (str
 		if err := tx.Commit(); err != nil {
 			return "", fmt.Errorf("commit manual correction: %w", err)
 		}
+		s.notifyChanged()
 		return current.AttemptID, nil
 	}
 
@@ -141,6 +142,7 @@ func (s *Store) ApplyManualUpdate(ctx context.Context, update ManualUpdate) (str
 	if err := tx.Commit(); err != nil {
 		return "", fmt.Errorf("commit manual attempt: %w", err)
 	}
+	s.notifyChanged()
 	return manualID, nil
 }
 

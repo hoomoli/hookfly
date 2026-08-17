@@ -1,0 +1,16 @@
+kind: HTTPTargets
+targets:
+  - id: application-admin-deploy
+    type: http
+    connection: application-admin-example
+    method: POST
+    path: /api/deploy
+    headers:
+      X-Deploy-Source: hookfly
+    body:
+      type: json
+      value:
+        ref: "{{ event.ref }}"
+        revision: "{{ event.revision }}"
+        attempt_id: "{{ attempt.id }}"
+    success_statuses: [202]

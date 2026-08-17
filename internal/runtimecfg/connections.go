@@ -6,10 +6,12 @@ import (
 	"sort"
 
 	"github.com/hoomoli/hookfly/internal/dokploy"
+	"github.com/hoomoli/hookfly/internal/httptarget"
 )
 
 const (
 	ConnectionTypeDokploy                 = "dokploy"
+	ConnectionTypeHTTP                    = "http"
 	ConnectionStatusConfigured            = "configured"
 	ConnectionCapabilityResourceDiscovery = "resource_discovery"
 )
@@ -53,9 +55,11 @@ func (c *connection) discoverComposeAppName(ctx context.Context, composeID strin
 }
 
 type connection struct {
-	id     string
-	kind   string
-	client *dokploy.Client
+	id         string
+	kind       string
+	baseURL    string
+	client     *dokploy.Client
+	httpClient *httptarget.Client
 }
 
 func (c *connection) summary() ConnectionSummary {

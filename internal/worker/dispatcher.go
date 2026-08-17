@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/hoomoli/hookfly/internal/dokploy"
+	"github.com/hoomoli/hookfly/internal/httptarget"
 	"github.com/hoomoli/hookfly/internal/redact"
 	"github.com/hoomoli/hookfly/internal/runtimecfg"
 	"github.com/hoomoli/hookfly/internal/store"
@@ -76,6 +77,9 @@ func (d *Dispatcher) RunOnce(ctx context.Context) (bool, error) {
 		return true, d.afterTerminal(transitionContext)
 	}
 
+	if target.Type == "http" {
+		return d.dispatchHTTP(ctx, work, target)
+	}
 	request := dokploy.DeployRequest{ComposeID: target.ComposeID, Description: "attempt_id=" + work.AttemptID}
 	var requestJSON []byte
 	cursor, _, cursorErr := target.Client.LatestDeploymentID(ctx, target.ComposeID)
@@ -135,6 +139,65 @@ func (d *Dispatcher) RunOnce(ctx context.Context) (bool, error) {
 		return true, err
 	}
 	err = d.store.MarkTransportFailed(transitionContext, work.AttemptID, requestJSON, responseJSON, at)
+	commitView.Unlock()
+	if err != nil {
+		return true, err
+	}
+	return true, d.afterTerminal(transitionContext)
+}
+
+func (d *Dispatcher) dispatchHTTP(ctx context.Context, work store.PendingAttempt, target *runtimecfg.Target) (bool, error) {
+	if target == nil || target.HTTP == nil || target.HTTP.Client == nil {
+		transitionContext, cancelTransition := d.newTransitionContext(ctx)
+		defer cancelTransition()
+		commitView := d.manager.Read()
+		err := d.store.MarkTransportFailed(transitionContext, work.AttemptID, nil, boundedSnapshot(map[string]any{"kind": "definitive", "error": "HTTP target is unavailable"}), d.clock())
+		commitView.Unlock()
+		if err != nil {
+			return true, err
+		}
+		return true, d.afterTerminal(transitionContext)
+	}
+	values := httptarget.Values{
+		EventSource: work.Event.Source, EventRepository: work.Event.Repository, EventRef: work.Event.Ref,
+		EventRevision: work.Event.Revision, EventStatus: work.Event.Status, EventExternalID: work.Event.ExternalID,
+		EventTrigger: work.Event.Trigger, EventCommitMessage: work.Event.CommitMessage, AttemptID: work.AttemptID, DeliveryID: work.DeliveryID, TargetID: target.ID,
+	}
+	var requestJSON []byte
+	var recordErr error
+	response, dispatchErr := target.HTTP.Client.Dispatch(ctx, target.HTTP.Request, values, func(evidence []byte) error {
+		requestJSON = boundedSnapshot(json.RawMessage(evidence))
+		recordContext, cancelRecord := d.newTransitionContext(ctx)
+		defer cancelRecord()
+		recordErr = d.store.RecordDeploymentRequest(recordContext, work.AttemptID, requestJSON, d.clock())
+		return recordErr
+	})
+	if recordErr != nil {
+		return true, recordErr
+	}
+	at := d.clock()
+	responseJSON := httpResponseSnapshot(response, dispatchErr)
+	transitionContext, cancelTransition := d.newTransitionContext(ctx)
+	defer cancelTransition()
+	commitView := d.manager.Read()
+	if dispatchErr == nil {
+		err := d.store.MarkAccepted(transitionContext, work.AttemptID, requestJSON, responseJSON, at)
+		commitView.Unlock()
+		if err != nil {
+			return true, err
+		}
+		return true, d.afterTerminal(transitionContext)
+	}
+	var transportError *httptarget.TransportError
+	if errors.As(dispatchErr, &transportError) && transportError.Kind == httptarget.TransportUncertain {
+		err := d.store.MarkTransportUnknownTerminal(transitionContext, work.AttemptID, requestJSON, responseJSON, at)
+		commitView.Unlock()
+		if err != nil {
+			return true, err
+		}
+		return true, d.afterTerminal(transitionContext)
+	}
+	err := d.store.MarkTransportFailed(transitionContext, work.AttemptID, requestJSON, responseJSON, at)
 	commitView.Unlock()
 	if err != nil {
 		return true, err
@@ -210,6 +273,27 @@ func responseSnapshot(response dokploy.DeployResponse, deployErr error) []byte {
 		value["error"] = deployErr.Error()
 		var transportError *dokploy.TransportError
 		if errors.As(deployErr, &transportError) {
+			value["kind"] = transportError.Kind
+		}
+	}
+	return boundedSnapshot(value)
+}
+
+func httpResponseSnapshot(response httptarget.Response, dispatchErr error) []byte {
+	var body any
+	if len(response.Body) > 0 {
+		if err := json.Unmarshal(response.Body, &body); err != nil {
+			body = string(response.Body)
+		}
+	}
+	value := map[string]any{"status_code": response.StatusCode, "truncated": response.Truncated}
+	if body != nil {
+		value["body"] = body
+	}
+	if dispatchErr != nil {
+		value["error"] = dispatchErr.Error()
+		var transportError *httptarget.TransportError
+		if errors.As(dispatchErr, &transportError) {
 			value["kind"] = transportError.Kind
 		}
 	}

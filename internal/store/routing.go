@@ -68,6 +68,7 @@ func (s *Store) IngestDeferred(ctx context.Context, command domain.IngestCommand
 	if err := tx.Commit(); err != nil {
 		return domain.IngestResult{}, fmt.Errorf("commit deferred ingest: %w", err)
 	}
+	s.notifyChanged()
 	return domain.IngestResult{EventID: eventID}, nil
 }
 
@@ -208,6 +209,7 @@ func (s *Store) FinalizeDeferred(ctx context.Context, deferred DeferredEvent, de
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("commit deferred finalization: %w", err)
 	}
+	s.notifyChanged()
 	return true, nil
 }
 

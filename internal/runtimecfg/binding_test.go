@@ -2,6 +2,8 @@ package runtimecfg
 
 import (
 	"testing"
+
+	"github.com/hoomoli/hookfly/internal/config"
 )
 
 func TestBindingStatusAcceptsV2EquivalentOrigins(t *testing.T) {
@@ -83,5 +85,28 @@ func TestBindingStatusRejectsVersionlessSnapshotForV2Target(t *testing.T) {
 		`"connection":{"id":"primary","base_url":"https://dokploy.example.invalid"}}`)
 	if target, status := generation.ResolveTarget("production", snapshot); target != nil || status != BindingUnavailable {
 		t.Fatalf("ResolveTarget() = %#v, %q", target, status)
+	}
+}
+
+func TestBindingStatusRejectsChangedHTTPContract(t *testing.T) {
+	bundle := generationBundle("https://dokploy.example.invalid")
+	bundle.DokployConnections = nil
+	bundle.HTTPConnections = []config.HTTPConnection{{ID: "admin", BaseURL: "https://admin.example.invalid", Auth: config.HTTPAuthentication{Type: "api_key", Value: "http-secret", Header: "X-API-Token"}}}
+	bundle.Targets = []config.Target{{ID: "production", Type: "http", Connection: "admin", Method: "POST", Path: "/api/deploy", Body: &config.HTTPBody{Type: "json", Value: map[string]any{"ref": "{{ event.ref }}"}}}}
+	generation, err := Compile(bundle, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, found := generation.Target("production")
+	if !found {
+		t.Fatal("HTTP target is missing")
+	}
+	bundle.Targets[0].Path = "/api/other"
+	changed, err := Compile(bundle, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target, status := changed.ResolveTarget("production", current.Snapshot); target != nil || status != BindingChanged {
+		t.Fatalf("ResolveTarget() = %#v/%q", target, status)
 	}
 }

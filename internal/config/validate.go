@@ -3,13 +3,24 @@ package config
 import (
 	"crypto/sha256"
 	"fmt"
+	"mime"
+	"net/http"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 var identifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+var httpTemplatePattern = regexp.MustCompile(`\{\{\s*([^{}\s]+)\s*\}\}`)
+
+var allowedHTTPTemplateVariables = map[string]struct{}{
+	"event.source": {}, "event.repository": {}, "event.ref": {}, "event.revision": {},
+	"event.status": {}, "event.external_id": {}, "event.trigger": {}, "event.commit_message": {},
+	"attempt.id": {}, "target.id": {},
+}
 
 // ValidateAndCanonicalize validates cross-document bundle references and
 // normalizes their representation for deterministic routing.
@@ -22,7 +33,7 @@ func ValidateAndCanonicalize(bundle *Bundle) error {
 	if err != nil {
 		return err
 	}
-	connections, err := validateConnections(bundle.DokployConnections)
+	connections, err := validateConnections(bundle.DokployConnections, bundle.HTTPConnections)
 	if err != nil {
 		return err
 	}
@@ -101,11 +112,11 @@ func validateSource(id string, location SourceLocation, configured []Repository,
 	return nil
 }
 
-func validateConnections(connections []DokployConnection) (map[string]struct{}, error) {
-	locations := make(map[string]SourceLocation, len(connections))
-	known := make(map[string]struct{}, len(connections))
-	for index := range connections {
-		connection := connections[index]
+func validateConnections(dokployConnections []DokployConnection, httpConnections []HTTPConnection) (map[string]string, error) {
+	locations := make(map[string]SourceLocation, len(dokployConnections)+len(httpConnections))
+	known := make(map[string]string, len(dokployConnections)+len(httpConnections))
+	for index := range dokployConnections {
+		connection := dokployConnections[index]
 		if err := validateIdentifier("connection", connection.ID); err != nil {
 			return nil, err
 		}
@@ -118,12 +129,28 @@ func validateConnections(connections []DokployConnection) (map[string]struct{}, 
 		if err := validateDokployURL(connection.BaseURL); err != nil {
 			return nil, fmt.Errorf("Dokploy connection %q: %w", connection.ID, err)
 		}
-		known[connection.ID] = struct{}{}
+		known[connection.ID] = "dokploy"
+	}
+	for index := range httpConnections {
+		connection := httpConnections[index]
+		if err := validateIdentifier("connection", connection.ID); err != nil {
+			return nil, err
+		}
+		if err := addUniqueLocation(locations, "connection", connection.ID, connection.Location); err != nil {
+			return nil, err
+		}
+		if err := validateHTTPURL(connection.BaseURL, connection.AllowPrivateNetwork); err != nil {
+			return nil, fmt.Errorf("HTTP connection %q: %w", connection.ID, err)
+		}
+		if err := validateHTTPAuthentication(connection.Auth); err != nil {
+			return nil, fmt.Errorf("HTTP connection %q: %w", connection.ID, err)
+		}
+		known[connection.ID] = "http"
 	}
 	return known, nil
 }
 
-func validateTargets(configured []Target, connections map[string]struct{}) (map[string]struct{}, error) {
+func validateTargets(configured []Target, connections map[string]string) (map[string]struct{}, error) {
 	locations := make(map[string]SourceLocation, len(configured))
 	known := make(map[string]struct{}, len(configured))
 	for index := range configured {
@@ -134,17 +161,55 @@ func validateTargets(configured []Target, connections map[string]struct{}) (map[
 		if err := addUniqueLocation(locations, "target", target.ID, target.Location); err != nil {
 			return nil, err
 		}
-		if target.Type != "dokploy" {
-			return nil, fmt.Errorf("unsupported target type %q", target.Type)
-		}
-		if _, exists := connections[target.Connection]; !exists {
+		connectionType, exists := connections[target.Connection]
+		if !exists {
 			return nil, fmt.Errorf("target %q references unknown connection %q", target.ID, target.Connection)
 		}
-		if target.ResourceType != "compose" {
-			return nil, fmt.Errorf("unsupported resource type %q", target.ResourceType)
-		}
-		if err := validateIdentifier("target resource", target.ResourceID); err != nil {
-			return nil, err
+		switch target.Type {
+		case "dokploy":
+			if connectionType != "dokploy" {
+				return nil, fmt.Errorf("target %q references incompatible connection %q", target.ID, target.Connection)
+			}
+			if target.ResourceType != "compose" {
+				return nil, fmt.Errorf("unsupported resource type %q", target.ResourceType)
+			}
+			if err := validateIdentifier("target resource", target.ResourceID); err != nil {
+				return nil, err
+			}
+		case "http":
+			if connectionType != "http" {
+				return nil, fmt.Errorf("target %q references incompatible connection %q", target.ID, target.Connection)
+			}
+			if err := validateHTTPMethod(target.Method); err != nil {
+				return nil, err
+			}
+			if err := validateHTTPPath(target.Path); err != nil {
+				return nil, err
+			}
+			if err := validateHTTPQuery(target.Query); err != nil {
+				return nil, err
+			}
+			for name, value := range target.Headers {
+				if err := validateHTTPHeaderName(name); err != nil {
+					return nil, err
+				}
+				if isReservedHTTPHeader(name) {
+					return nil, fmt.Errorf("reserved HTTP header %q", name)
+				}
+				if err := validateHTTPText(value); err != nil {
+					return nil, err
+				}
+			}
+			if err := validateHTTPBody(target.Method, target.Body); err != nil {
+				return nil, err
+			}
+			for _, status := range target.SuccessStatuses {
+				if status < 200 || status >= 300 {
+					return nil, fmt.Errorf("invalid HTTP success status %d", status)
+				}
+			}
+		default:
+			return nil, fmt.Errorf("unsupported target type %q", target.Type)
 		}
 		known[target.ID] = struct{}{}
 	}
@@ -250,6 +315,183 @@ func validateDokployURL(rawURL string) error {
 	return nil
 }
 
+func validateHTTPURL(rawURL string, allowPrivateNetwork bool) error {
+	parsed, err := url.ParseRequestURI(rawURL)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return fmt.Errorf("invalid HTTP URL")
+	}
+	if !allowPrivateNetwork && unsafeHTTPHost(parsed.Hostname()) {
+		return fmt.Errorf("private HTTP URL requires allow_private_network")
+	}
+	return nil
+}
+
+func unsafeHTTPHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	address, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	return address.IsLoopback() || address.IsLinkLocalUnicast() || address.IsPrivate() || address.IsUnspecified() || address.IsMulticast()
+}
+
+func validateHTTPMethod(method string) error {
+	switch method {
+	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return nil
+	default:
+		return fmt.Errorf("unsupported HTTP method %q", method)
+	}
+}
+
+func validateHTTPPath(path string) error {
+	parsed, err := url.ParseRequestURI(path)
+	if err != nil || !strings.HasPrefix(path, "/") || parsed.IsAbs() || parsed.Host != "" || parsed.RawQuery != "" || parsed.Fragment != "" || strings.Contains(path, "..") {
+		return fmt.Errorf("invalid HTTP path")
+	}
+	return nil
+}
+
+func validateHTTPHeaderName(name string) error {
+	if name == "" {
+		return fmt.Errorf("invalid HTTP header %q", name)
+	}
+	for _, character := range name {
+		if (character < '0' || character > '9') && (character < 'A' || character > 'Z') && (character < 'a' || character > 'z') && !strings.ContainsRune("!#$%&'*+-.^_`|~", character) {
+			return fmt.Errorf("invalid HTTP header %q", name)
+		}
+	}
+	return nil
+}
+
+func isReservedHTTPHeader(name string) bool {
+	switch strings.ToLower(name) {
+	case "authorization", "content-type", "host", "idempotency-key":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateHTTPAuthentication(auth HTTPAuthentication) error {
+	if auth.Value == "" {
+		return fmt.Errorf("HTTP authentication requires value")
+	}
+	switch auth.Type {
+	case "bearer":
+		if auth.Header != "" {
+			return fmt.Errorf("bearer HTTP authentication must not set header")
+		}
+	case "api_key":
+		if err := validateHTTPHeaderName(auth.Header); err != nil || isReservedHTTPHeader(auth.Header) {
+			return fmt.Errorf("api_key HTTP authentication requires a non-reserved header")
+		}
+	default:
+		return fmt.Errorf("unsupported HTTP authentication type %q", auth.Type)
+	}
+	return nil
+}
+
+func validateHTTPQuery(query map[string]HTTPStringList) error {
+	for name, values := range query {
+		if name == "" {
+			return fmt.Errorf("HTTP query name is required")
+		}
+		if len(values) == 0 {
+			return fmt.Errorf("HTTP query %q requires at least one value", name)
+		}
+		for _, value := range values {
+			if err := validateHTTPText(value); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateHTTPBody(method string, body *HTTPBody) error {
+	if body == nil {
+		return nil
+	}
+	if method == http.MethodGet {
+		return fmt.Errorf("GET HTTP target must not set body")
+	}
+	if body.ContentType != "" {
+		if _, _, err := mime.ParseMediaType(body.ContentType); err != nil {
+			return fmt.Errorf("invalid HTTP content_type")
+		}
+	}
+	switch body.Type {
+	case "json":
+		return validateHTTPJSONBody(body.Value)
+	case "form":
+		form, ok := body.Value.(map[string]HTTPStringList)
+		if !ok {
+			return fmt.Errorf("HTTP form body requires key-value fields")
+		}
+		return validateHTTPQuery(form)
+	case "raw":
+		value, ok := body.Value.(string)
+		if !ok {
+			return fmt.Errorf("HTTP raw body requires string value")
+		}
+		return validateHTTPText(value)
+	default:
+		return fmt.Errorf("unsupported HTTP body type %q", body.Type)
+	}
+}
+
+func validateHTTPJSONBody(value any) error {
+	switch typed := value.(type) {
+	case nil, bool, int, int64, uint64, float64:
+		return nil
+	case string:
+		return validateHTTPText(typed)
+	case []any:
+		for _, child := range typed {
+			if err := validateHTTPJSONBody(child); err != nil {
+				return err
+			}
+		}
+		return nil
+	case map[string]any:
+		for _, child := range typed {
+			if err := validateHTTPJSONBody(child); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("invalid HTTP body")
+	}
+}
+
+func validateHTTPText(value string) error {
+	if exactEnvironmentReference.MatchString(value) {
+		return fmt.Errorf("HTTP request values must not use environment references")
+	}
+	return validateHTTPTemplate(value)
+}
+
+func validateHTTPTemplate(value string) error {
+	if strings.Count(value, "{{") != strings.Count(value, "}}") {
+		return fmt.Errorf("invalid HTTP template")
+	}
+	matches := httpTemplatePattern.FindAllStringSubmatchIndex(value, -1)
+	for _, match := range matches {
+		if _, found := allowedHTTPTemplateVariables[value[match[2]:match[3]]]; !found {
+			return fmt.Errorf("unsupported HTTP template variable %q", value[match[2]:match[3]])
+		}
+	}
+	remaining := httpTemplatePattern.ReplaceAllString(value, "")
+	if strings.Contains(remaining, "{{") || strings.Contains(remaining, "}}") {
+		return fmt.Errorf("invalid HTTP template")
+	}
+	return nil
+}
+
 func addUniqueLocation(locations map[string]SourceLocation, kind, id string, location SourceLocation) error {
 	if previous, exists := locations[id]; exists {
 		return fmt.Errorf("duplicate %s ID %q at %s and %s", kind, id, previous.String(), location.String())
@@ -288,6 +530,9 @@ func canonicalize(bundle *Bundle) {
 	}
 	sort.Slice(bundle.DokployConnections, func(left, right int) bool {
 		return bundle.DokployConnections[left].ID < bundle.DokployConnections[right].ID
+	})
+	sort.Slice(bundle.HTTPConnections, func(left, right int) bool {
+		return bundle.HTTPConnections[left].ID < bundle.HTTPConnections[right].ID
 	})
 	sort.Slice(bundle.Targets, func(left, right int) bool { return bundle.Targets[left].ID < bundle.Targets[right].ID })
 	sort.Slice(bundle.Routes, func(left, right int) bool {

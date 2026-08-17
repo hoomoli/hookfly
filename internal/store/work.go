@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/hoomoli/hookfly/internal/domain"
 )
 
 var (
@@ -26,6 +27,7 @@ type PendingAttempt struct {
 	TargetID       string
 	TargetSnapshot []byte
 	ReceivedAt     time.Time
+	Event          domain.CanonicalEvent
 }
 
 // PollWork is one atomically claimed current attempt that is due for reconciliation.
@@ -77,8 +79,9 @@ func (s *Store) ClaimPendingAttempt(ctx context.Context, now time.Time) (Pending
 
 	var work PendingAttempt
 	var receivedAt int64
-	err = tx.QueryRowContext(ctx, `
-		SELECT e.id, d.id, a.id, d.target_id, d.target_snapshot, e.received_at
+	row := tx.QueryRowContext(ctx, `
+		SELECT e.id, d.id, a.id, d.target_id, d.target_snapshot, e.received_at,
+		       e.provider, e.source_id, e.repository_id, e.event, e.ref, e.status, e.revision, e.commit_message, e.external_id, e.trigger
 		FROM deliveries d
 		JOIN events e ON e.id = d.event_id
 		JOIN delivery_attempts a ON a.id = d.current_attempt_id AND a.delivery_id = d.id
@@ -105,7 +108,11 @@ func (s *Store) ClaimPendingAttempt(ctx context.Context, now time.Time) (Pending
 		        )
 		  )
 		ORDER BY e.received_at, d.created_at, d.id
-		LIMIT 1`).Scan(&work.EventID, &work.DeliveryID, &work.AttemptID, &work.TargetID, &work.TargetSnapshot, &receivedAt)
+		LIMIT 1`)
+	var ref, status, revision, commitMessage, externalID, trigger sql.NullString
+	err = row.Scan(&work.EventID, &work.DeliveryID, &work.AttemptID, &work.TargetID, &work.TargetSnapshot, &receivedAt,
+		&work.Event.Provider, &work.Event.Source, &work.Event.Repository, &work.Event.Event,
+		&ref, &status, &revision, &commitMessage, &externalID, &trigger)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PendingAttempt{}, false, nil
 	}
@@ -113,6 +120,8 @@ func (s *Store) ClaimPendingAttempt(ctx context.Context, now time.Time) (Pending
 		return PendingAttempt{}, false, fmt.Errorf("select pending attempt: %w", err)
 	}
 	work.ReceivedAt = time.UnixMilli(receivedAt).UTC()
+	work.Event.Ref, work.Event.Status, work.Event.Revision = ref.String, status.String, revision.String
+	work.Event.CommitMessage, work.Event.ExternalID, work.Event.Trigger = commitMessage.String, externalID.String, trigger.String
 
 	result, err := tx.ExecContext(ctx, `
 		UPDATE delivery_attempts
@@ -149,11 +158,17 @@ func (s *Store) ClaimPendingAttempt(ctx context.Context, now time.Time) (Pending
 	if err := tx.Commit(); err != nil {
 		return PendingAttempt{}, false, fmt.Errorf("commit attempt claim: %w", err)
 	}
+	s.notifyChanged()
 	return work, true, nil
 }
 
 func (s *Store) MarkEnqueued(ctx context.Context, attemptID string, requestJSON, responseJSON []byte, at, pollDue, deadline time.Time) error {
 	return s.transitionAttempt(ctx, attemptID, requestJSON, responseJSON, at, "enqueued", "locating", "transport_enqueued", &at, &pollDue, &deadline)
+}
+
+// MarkAccepted completes one direct HTTP operation that has no observable deployment lifecycle.
+func (s *Store) MarkAccepted(ctx context.Context, attemptID string, requestJSON, responseJSON []byte, at time.Time) error {
+	return s.transitionAttempt(ctx, attemptID, requestJSON, responseJSON, at, "enqueued", "done", "transport_accepted", &at, nil, nil)
 }
 
 func (s *Store) MarkTransportFailed(ctx context.Context, attemptID string, requestJSON, responseJSON []byte, at time.Time) error {
@@ -162,6 +177,11 @@ func (s *Store) MarkTransportFailed(ctx context.Context, attemptID string, reque
 
 func (s *Store) MarkTransportUnknown(ctx context.Context, attemptID string, requestJSON, responseJSON []byte, at, pollDue, deadline time.Time) error {
 	return s.transitionAttempt(ctx, attemptID, requestJSON, responseJSON, at, "unknown", "locating", "transport_unknown", nil, &pollDue, &deadline)
+}
+
+// MarkTransportUnknownTerminal records a direct send whose remote acceptance cannot be determined.
+func (s *Store) MarkTransportUnknownTerminal(ctx context.Context, attemptID string, requestJSON, responseJSON []byte, at time.Time) error {
+	return s.transitionAttempt(ctx, attemptID, requestJSON, responseJSON, at, "unknown", "unknown", "transport_unknown", nil, nil, nil)
 }
 
 // RecordDeploymentRequest durably captures the request immediately before the remote POST.
@@ -376,6 +396,7 @@ func (s *Store) CompletePoll(ctx context.Context, work PollWork, update PollUpda
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("commit poll completion: %w", err)
 	}
+	s.notifyChanged()
 	return changed, nil
 }
 
@@ -484,6 +505,7 @@ func (s *Store) RecoverInterrupted(
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit interrupted recovery: %w", err)
 	}
+	s.notifyChanged()
 	return changes, nil
 }
 
@@ -550,6 +572,7 @@ func (s *Store) transitionAttempt(
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit attempt transition: %w", err)
 	}
+	s.notifyChanged()
 	return nil
 }
 

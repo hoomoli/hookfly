@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { listNotifications } from "../api";
+import { listNotifications, openNotificationStream } from "../api";
 import { i18n } from "../i18n";
 import { appendFacts, clearNotificationHistory, defaultNotificationState, markAllRead, markRead, NOTIFICATION_STORAGE_KEY, notificationFactEnabled, parseNotificationState, resetRepositoryPreferences, setNotificationStatus } from "../notifications";
 import type { NotificationFact, NotificationStatusKey, Repository, StoredNotificationState } from "../types";
@@ -36,13 +36,13 @@ function systemNotificationTitle(fact: NotificationFact, repositories: readonly 
   return `#${repositoryName} · ${category} · ${i18n.t(`notifications.outcomes.${fact.outcome}`)}`;
 }
 
-export function useNotifications(onOpenEvent: (eventID: string) => void, pollInterval = 5_000, repositories: readonly Repository[] = []): NotificationController {
+export function useNotifications(onOpenEvent: (eventID: string) => void, repositories: readonly Repository[] = []): NotificationController {
   const [state, setState] = useState(readInitialState);
   const [error, setError] = useState<Error | null>(null);
   const [systemState, setSystemState] = useState<SystemNotificationState>(permissionState);
-  const [pollRevision, setPollRevision] = useState(0);
+  const [streamRevision, setStreamRevision] = useState(0);
   const stateRef = useRef(state);
-  const pollRevisionRef = useRef(0);
+  const streamRevisionRef = useRef(0);
   const openRef = useRef(onOpenEvent);
   const repositoriesRef = useRef(repositories);
   stateRef.current = state;
@@ -69,57 +69,75 @@ export function useNotifications(onOpenEvent: (eventID: string) => void, pollInt
   }, []);
 
   useEffect(() => {
-    const revision = pollRevision;
+    const revision = streamRevision;
     let disposed = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let source: EventSource | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let failures = 0;
-    const schedule = (delay: number) => { if (!disposed && revision === pollRevisionRef.current) timer = setTimeout(run, delay); };
-    const run = () => {
-      if (revision !== pollRevisionRef.current) return;
-      if (timer) clearTimeout(timer);
+    const live = () => !disposed && revision === streamRevisionRef.current;
+
+    const acceptFacts = (facts: NotificationFact[], latestCursor?: string) => {
+      if (facts.length === 0) return;
+      const current = stateRef.current;
+      const seen = new Set(current.items.map((item) => item.id));
+      const accepted = facts.filter((fact) => {
+        if (seen.has(fact.id) || !notificationFactEnabled(current, fact)) return false;
+        seen.add(fact.id);
+        return true;
+      });
+      const cursor = latestCursor || facts[facts.length - 1].cursor;
+      update(() => ({ ...appendFacts(current, accepted), cursor: cursor || current.cursor }));
+      if (current.system_enabled && permissionState() === "granted") {
+        for (const fact of accepted) {
+          try {
+            const notification = new Notification(systemNotificationTitle(fact, repositoriesRef.current), { body: fact.summary, tag: fact.id });
+            notification.onclick = () => { window.focus(); openRef.current(fact.event_id); notification.close?.(); };
+          } catch { /* in-app notifications remain available */ }
+        }
+      }
+    };
+
+    const openStream = () => {
+      source = openNotificationStream(stateRef.current.cursor || undefined);
+      source.addEventListener("fact", (event) => {
+        if (!live()) return;
+        try {
+          acceptFacts([JSON.parse((event as MessageEvent<string>).data) as NotificationFact]);
+        } catch { /* malformed payloads are skipped */ }
+      });
+      source.onopen = () => { if (live()) setError(null); };
+      source.onerror = () => { if (live()) setError(new Error("Notification feed failed")); };
+    };
+
+    // The REST feed establishes the baseline, then the stream pushes new facts.
+    const baseline = () => {
+      if (!live()) return;
       const current = stateRef.current;
       void listNotifications(current.cursor || undefined).then((feed) => {
-        if (disposed || revision !== pollRevisionRef.current) return;
+        if (!live()) return;
         failures = 0;
         setError(null);
         if (!current.initialized) {
           update((value) => ({ ...value, initialized: true, cursor: feed.latest_cursor }));
         } else {
-          const responseState = stateRef.current;
-          const seen = new Set(responseState.items.map((item) => item.id));
-          const accepted = feed.items.filter((fact) => {
-            if (seen.has(fact.id) || !notificationFactEnabled(responseState, fact)) return false;
-            seen.add(fact.id);
-            return true;
-          });
-          update(() => ({ ...appendFacts(responseState, accepted), cursor: feed.latest_cursor || responseState.cursor }));
-          if (responseState.system_enabled && permissionState() === "granted") {
-            for (const fact of accepted) {
-              try {
-                const notification = new Notification(systemNotificationTitle(fact, repositoriesRef.current), { body: fact.summary, tag: fact.id });
-                notification.onclick = () => { window.focus(); openRef.current(fact.event_id); notification.close?.(); };
-              } catch { /* in-app notifications remain available */ }
-            }
-          }
+          acceptFacts(feed.items, feed.latest_cursor);
         }
-        schedule(pollInterval);
+        openStream();
       }, (reason: unknown) => {
-        if (disposed || revision !== pollRevisionRef.current) return;
+        if (!live()) return;
         failures += 1;
         setError(reason instanceof Error ? reason : new Error("Notification feed failed"));
-        schedule(failures === 1 ? 5_000 : failures === 2 ? 10_000 : 30_000);
+        retryTimer = setTimeout(baseline, failures === 1 ? 5_000 : failures === 2 ? 10_000 : 30_000);
       });
     };
-    const onVisibility = () => {
-      if (document.visibilityState === "visible") {
-        if (timer) clearTimeout(timer);
-        run();
-      }
+
+    baseline();
+    return () => {
+      disposed = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      source?.close();
     };
-    document.addEventListener("visibilitychange", onVisibility);
-    run();
-    return () => { disposed = true; if (timer) clearTimeout(timer); document.removeEventListener("visibilitychange", onVisibility); };
-  }, [pollInterval, pollRevision, update]);
+  }, [streamRevision, update]);
 
   const enableSystemNotifications = useCallback(async () => {
     if (permissionState() === "unavailable") { setSystemState("unavailable"); return; }
@@ -147,9 +165,9 @@ export function useNotifications(onOpenEvent: (eventID: string) => void, pollInt
     markRead: (id) => update((current) => markRead(current, id)),
     markAllRead: () => update(markAllRead),
     clearHistory: () => {
-      pollRevisionRef.current += 1;
+      streamRevisionRef.current += 1;
       update(clearNotificationHistory);
-      setPollRevision(pollRevisionRef.current);
+      setStreamRevision(streamRevisionRef.current);
     },
   };
 }

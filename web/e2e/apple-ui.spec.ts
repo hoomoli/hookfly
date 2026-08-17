@@ -81,6 +81,7 @@ async function mockHookflyApi(page: Page, detailFails = false, ledgerEvent = eve
     let body: unknown;
     if (path.endsWith("/auth/session")) body = { user: { display_name: "Browser Test", username: "browser-test", provider: "local" } };
     else if (path.endsWith("/notifications")) body = { items: [], latest_cursor: "" };
+    else if (path.endsWith("/notifications/stream")) return route.fulfill({ status: 200, contentType: "text/event-stream", body: "" });
     else if (path.endsWith("/config/status")) body = idleStatus;
     else if (path.endsWith("/config/reload")) body = { status: "applied" };
     else if (path.endsWith("/repositories")) body = { repositories: [
@@ -430,6 +431,11 @@ test("honors reduced motion for Sheet transitions", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "View event event-1" }).click();
   const duration = await page.getByRole("complementary", { name: "Event details" }).evaluate((element) => getComputedStyle(element).animationDuration);
-  const seconds = duration.endsWith("ms") ? Number.parseFloat(duration) / 1000 : Number.parseFloat(duration);
-  expect(seconds).toBeLessThanOrEqual(0.001);
+  const seconds = duration.split(",").map((value) => {
+    const trimmed = value.trim();
+    if (trimmed === "" || trimmed === "none") return 0;
+    return trimmed.endsWith("ms") ? Number.parseFloat(trimmed) / 1000 : Number.parseFloat(trimmed);
+  });
+  expect(seconds.every(Number.isFinite), `animationDuration=${duration}`).toBe(true);
+  expect(seconds.every((value) => value <= 0.001)).toBe(true);
 });

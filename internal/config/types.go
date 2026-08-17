@@ -1,6 +1,12 @@
 package config
 
-import "time"
+import (
+	"bytes"
+	"fmt"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
 
 // GlobalHistory is the global retention configuration.
 type GlobalHistory struct {
@@ -33,14 +39,108 @@ type DokployConnection struct {
 	Location SourceLocation `yaml:"-"`
 }
 
+// HTTPConnection is one startup-configured origin and authentication credential.
+type HTTPConnection struct {
+	ID                  string             `yaml:"id"`
+	BaseURL             string             `yaml:"base_url"`
+	AllowPrivateNetwork bool               `yaml:"allow_private_network"`
+	Auth                HTTPAuthentication `yaml:"auth"`
+	Location            SourceLocation     `yaml:"-"`
+}
+
+// HTTPAuthentication is the one secret-bearing part of an HTTP connection.
+type HTTPAuthentication struct {
+	Type   string `yaml:"type"`
+	Value  string `yaml:"value" secret:"true"`
+	Header string `yaml:"header"`
+}
+
+// HTTPStringList accepts either one scalar or a scalar sequence, preserving repeated values.
+type HTTPStringList []string
+
+func (values *HTTPStringList) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		if node.Tag == "!!null" {
+			return fmt.Errorf("HTTP value must not be null")
+		}
+		*values = HTTPStringList{node.Value}
+		return nil
+	case yaml.SequenceNode:
+		result := make(HTTPStringList, len(node.Content))
+		for index, value := range node.Content {
+			if value.Kind != yaml.ScalarNode || value.Tag == "!!null" {
+				return fmt.Errorf("HTTP value must be a scalar")
+			}
+			result[index] = value.Value
+		}
+		*values = result
+		return nil
+	default:
+		return fmt.Errorf("HTTP value must be a scalar or sequence")
+	}
+}
+
+type HTTPBody struct {
+	Type        string `yaml:"type"`
+	ContentType string `yaml:"content_type"`
+	Value       any    `yaml:"value"`
+}
+
+func (body *HTTPBody) UnmarshalYAML(node *yaml.Node) error {
+	type rawBody struct {
+		Type        string    `yaml:"type"`
+		ContentType string    `yaml:"content_type"`
+		Value       yaml.Node `yaml:"value"`
+	}
+	encoded, err := yaml.Marshal(node)
+	if err != nil {
+		return err
+	}
+	decoder := yaml.NewDecoder(bytes.NewReader(encoded))
+	decoder.KnownFields(true)
+	var raw rawBody
+	if err := decoder.Decode(&raw); err != nil {
+		return err
+	}
+	body.Type, body.ContentType = raw.Type, raw.ContentType
+	switch raw.Type {
+	case "form":
+		var form map[string]HTTPStringList
+		if err := raw.Value.Decode(&form); err != nil {
+			return err
+		}
+		body.Value = form
+	case "raw":
+		var value string
+		if err := raw.Value.Decode(&value); err != nil {
+			return err
+		}
+		body.Value = value
+	default:
+		var value any
+		if err := raw.Value.Decode(&value); err != nil {
+			return err
+		}
+		body.Value = value
+	}
+	return nil
+}
+
 type Target struct {
-	ID           string         `yaml:"id"`
-	Type         string         `yaml:"type"`
-	Connection   string         `yaml:"connection"`
-	ResourceType string         `yaml:"resource_type"`
-	ResourceID   string         `yaml:"resource_id"`
-	PollTimeout  *Duration      `yaml:"poll_timeout"`
-	Location     SourceLocation `yaml:"-"`
+	ID              string                    `yaml:"id"`
+	Type            string                    `yaml:"type"`
+	Connection      string                    `yaml:"connection"`
+	ResourceType    string                    `yaml:"resource_type"`
+	ResourceID      string                    `yaml:"resource_id"`
+	PollTimeout     *Duration                 `yaml:"poll_timeout"`
+	Method          string                    `yaml:"method"`
+	Path            string                    `yaml:"path"`
+	Query           map[string]HTTPStringList `yaml:"query"`
+	Headers         map[string]string         `yaml:"headers"`
+	Body            *HTTPBody                 `yaml:"body"`
+	SuccessStatuses []int                     `yaml:"success_statuses"`
+	Location        SourceLocation            `yaml:"-"`
 }
 
 // SourceFile is one configuration file selected during discovery.
@@ -119,6 +219,7 @@ type Bundle struct {
 	GitLabSources      []GitLabSource
 	GitHubSources      []GitHubSource
 	DokployConnections []DokployConnection
+	HTTPConnections    []HTTPConnection
 	Targets            []Target
 	Routes             []Route
 }

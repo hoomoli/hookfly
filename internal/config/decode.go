@@ -29,7 +29,7 @@ func Decode(candidate Candidate, lookup EnvLookup) (*Bundle, error) {
 }
 
 func decodeGlobal(source SourceFile, lookup EnvLookup) (Global, error) {
-	node, err := parseDocument(source, lookup)
+	node, err := parseDocument(source)
 	if err != nil {
 		return Global{}, err
 	}
@@ -44,13 +44,16 @@ func decodeGlobal(source SourceFile, lookup EnvLookup) (Global, error) {
 }
 
 func decodeResource(bundle *Bundle, source SourceFile, lookup EnvLookup) error {
-	node, err := parseDocument(source, lookup)
+	node, err := parseDocument(source)
 	if err != nil {
 		return err
 	}
 	var header documentHeader
 	if err := node.Decode(&header); err != nil {
 		return sourceDecodeError(source, err)
+	}
+	if err := expandSecretEnvironmentReferences(node, lookup); err != nil {
+		return fmt.Errorf("decode configuration %q: %w", source.Path, err)
 	}
 	switch header.Kind {
 	case "GitLabSources":
@@ -93,6 +96,24 @@ func decodeResource(bundle *Bundle, source SourceFile, lookup EnvLookup) error {
 		}
 		bundle.DokployConnections = append(bundle.DokployConnections, document.Connections...)
 		bundle.Targets = append(bundle.Targets, document.Targets...)
+	case "HTTPConnections":
+		var document httpConnectionsDocument
+		if err := decodeStrict(node, &document); err != nil {
+			return strictSourceDecodeError(source)
+		}
+		for index := range document.Connections {
+			document.Connections[index].Location = SourceLocation{Path: source.Path, Field: "connections"}
+		}
+		bundle.HTTPConnections = append(bundle.HTTPConnections, document.Connections...)
+	case "HTTPTargets":
+		var document httpTargetsDocument
+		if err := decodeStrict(node, &document); err != nil {
+			return strictSourceDecodeError(source)
+		}
+		for index := range document.Targets {
+			document.Targets[index].Location = SourceLocation{Path: source.Path, Field: "targets"}
+		}
+		bundle.Targets = append(bundle.Targets, document.Targets...)
 	case "Routes":
 		var document routesDocument
 		if err := decodeStrict(node, &document); err != nil {
@@ -111,7 +132,7 @@ func decodeResource(bundle *Bundle, source SourceFile, lookup EnvLookup) error {
 	return nil
 }
 
-func parseDocument(source SourceFile, lookup EnvLookup) (*yaml.Node, error) {
+func parseDocument(source SourceFile) (*yaml.Node, error) {
 	decoder := yaml.NewDecoder(bytes.NewReader(source.Content))
 	var node yaml.Node
 	if err := decoder.Decode(&node); err != nil {
@@ -125,9 +146,6 @@ func parseDocument(source SourceFile, lookup EnvLookup) (*yaml.Node, error) {
 	}
 	if err := rejectDuplicateMappingKeys(&node); err != nil {
 		return nil, sourceDecodeError(source, err)
-	}
-	if err := expandExactEnvironmentReferences(&node, lookup); err != nil {
-		return nil, fmt.Errorf("decode configuration %q: %w", source.Path, err)
 	}
 	return &node, nil
 }
@@ -169,21 +187,28 @@ func rejectDuplicateMappingKeys(node *yaml.Node) error {
 	return nil
 }
 
-func expandExactEnvironmentReferences(node *yaml.Node, lookup EnvLookup) error {
+func expandSecretEnvironmentReferences(node *yaml.Node, lookup EnvLookup) error {
+	return expandExactEnvironmentReferences(node, lookup, nil)
+}
+
+func expandExactEnvironmentReferences(node *yaml.Node, lookup EnvLookup, path []string) error {
 	switch node.Kind {
 	case yaml.DocumentNode, yaml.SequenceNode:
 		for _, child := range node.Content {
-			if err := expandExactEnvironmentReferences(child, lookup); err != nil {
+			if err := expandExactEnvironmentReferences(child, lookup, path); err != nil {
 				return err
 			}
 		}
 	case yaml.MappingNode:
-		for index := 1; index < len(node.Content); index += 2 {
-			if err := expandExactEnvironmentReferences(node.Content[index], lookup); err != nil {
+		for index := 0; index < len(node.Content); index += 2 {
+			if err := expandExactEnvironmentReferences(node.Content[index+1], lookup, append(path, node.Content[index].Value)); err != nil {
 				return err
 			}
 		}
 	case yaml.ScalarNode:
+		if !secretEnvironmentPath(path) {
+			return nil
+		}
 		match := exactEnvironmentReference.FindStringSubmatch(node.Value)
 		if match == nil {
 			return nil
@@ -200,6 +225,20 @@ func expandExactEnvironmentReferences(node *yaml.Node, lookup EnvLookup) error {
 		node.Style = yaml.DoubleQuotedStyle
 	}
 	return nil
+}
+
+func secretEnvironmentPath(path []string) bool {
+	if len(path) == 0 {
+		return false
+	}
+	switch path[len(path)-1] {
+	case "token", "secret", "api_key":
+		return true
+	case "value":
+		return len(path) >= 2 && path[len(path)-2] == "auth"
+	default:
+		return false
+	}
 }
 
 func sourceDecodeError(source SourceFile, err error) error {
@@ -304,6 +343,16 @@ type dokployTargetsDocument struct {
 	Kind        string              `yaml:"kind"`
 	Connections []DokployConnection `yaml:"connections"`
 	Targets     []Target            `yaml:"targets"`
+}
+
+type httpConnectionsDocument struct {
+	Kind        string           `yaml:"kind"`
+	Connections []HTTPConnection `yaml:"connections"`
+}
+
+type httpTargetsDocument struct {
+	Kind    string   `yaml:"kind"`
+	Targets []Target `yaml:"targets"`
 }
 
 type routesDocument struct {

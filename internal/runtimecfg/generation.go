@@ -17,6 +17,7 @@ import (
 	"github.com/hoomoli/hookfly/internal/domain"
 	"github.com/hoomoli/hookfly/internal/github"
 	"github.com/hoomoli/hookfly/internal/gitlab"
+	"github.com/hoomoli/hookfly/internal/httptarget"
 	"github.com/hoomoli/hookfly/internal/provider"
 	"github.com/hoomoli/hookfly/internal/store"
 )
@@ -31,10 +32,18 @@ type Target struct {
 	ComposeID      string
 	Fingerprint    string
 	Client         *dokploy.Client
+	Type           string
+	HTTP           *HTTPExecutable
 	PollInterval   time.Duration
 	PollTimeout    time.Duration
 	Snapshot       []byte
 	BindingVersion int
+}
+
+// HTTPExecutable is the immutable executable contract for one direct HTTP target.
+type HTTPExecutable struct {
+	Client  *httptarget.Client
+	Request httptarget.Request
 }
 
 // Generation contains all projections that must change atomically after a reload.
@@ -118,7 +127,8 @@ func compileBundle(bundle *config.Bundle, logger *slog.Logger) (*Generation, err
 	}
 
 	interval, timeout := pollingSettings(candidate.Global.Polling)
-	configuredConnections := make(map[string]config.DokployConnection, len(candidate.DokployConnections))
+	configuredDokployConnections := make(map[string]config.DokployConnection, len(candidate.DokployConnections))
+	configuredHTTPConnections := make(map[string]config.HTTPConnection, len(candidate.HTTPConnections))
 	generation := &Generation{
 		bundle: candidate, connections: make(map[string]*connection, len(candidate.DokployConnections)),
 		targets:          make(map[string]*Target, len(candidate.Targets)),
@@ -132,15 +142,28 @@ func compileBundle(bundle *config.Bundle, logger *slog.Logger) (*Generation, err
 			return nil, fmt.Errorf("compile Dokploy connection: %w", err)
 		}
 		candidate.DokployConnections[index].BaseURL = canonical
-		configuredConnections[candidate.DokployConnections[index].ID] = candidate.DokployConnections[index]
+		configuredDokployConnections[candidate.DokployConnections[index].ID] = candidate.DokployConnections[index]
 		client, err := dokploy.NewClient(canonical, candidate.DokployConnections[index].APIKey, http.DefaultClient, logger)
 		if err != nil {
 			return nil, fmt.Errorf("compile Dokploy connection: %w", err)
 		}
 		generation.connections[candidate.DokployConnections[index].ID] = &connection{
-			id: candidate.DokployConnections[index].ID, kind: ConnectionTypeDokploy,
-			client: client,
+			id: candidate.DokployConnections[index].ID, kind: ConnectionTypeDokploy, baseURL: canonical, client: client,
 		}
+	}
+	for index := range candidate.HTTPConnections {
+		canonical, err := httptarget.CanonicalBaseURL(candidate.HTTPConnections[index].BaseURL)
+		if err != nil {
+			return nil, fmt.Errorf("compile HTTP connection: %w", err)
+		}
+		candidate.HTTPConnections[index].BaseURL = canonical
+		configuredHTTPConnections[candidate.HTTPConnections[index].ID] = candidate.HTTPConnections[index]
+		auth := httptarget.Authentication{Type: candidate.HTTPConnections[index].Auth.Type, Value: candidate.HTTPConnections[index].Auth.Value, Header: candidate.HTTPConnections[index].Auth.Header}
+		client, err := httptarget.NewAuthenticatedClient(canonical, auth, candidate.HTTPConnections[index].AllowPrivateNetwork, http.DefaultClient)
+		if err != nil {
+			return nil, fmt.Errorf("compile HTTP connection: %w", err)
+		}
+		generation.connections[candidate.HTTPConnections[index].ID] = &connection{id: candidate.HTTPConnections[index].ID, kind: ConnectionTypeHTTP, baseURL: canonical, httpClient: client}
 	}
 	for _, configured := range candidate.GitLabSources {
 		source := generation.addSource("gitlab", configured.ID, gitlab.New(configured.Token), configured.Repositories)
@@ -150,28 +173,36 @@ func compileBundle(bundle *config.Bundle, logger *slog.Logger) (*Generation, err
 		generation.addSource("github", configured.ID, github.New(configured.Secret), configured.Repositories)
 	}
 	for _, configured := range candidate.Targets {
-		connection := configuredConnections[configured.Connection]
-		client, err := dokploy.NewClient(connection.BaseURL, connection.APIKey, http.DefaultClient, logger)
-		if err != nil {
-			return nil, fmt.Errorf("compile Dokploy target: %w", err)
-		}
 		targetTimeout := timeout
 		if configured.PollTimeout != nil && configured.PollTimeout.Duration > 0 {
 			targetTimeout = configured.PollTimeout.Duration
 		}
-		snapshot, err := json.Marshal(targetSnapshot{
-			BindingVersion: bindingVersion, ID: configured.ID, Type: configured.Type,
-			ResourceType: configured.ResourceType, ResourceID: configured.ResourceID,
-			Connection: connectionSnapshot{ID: connection.ID, BaseURL: connection.BaseURL},
-		})
-		if err != nil {
-			return nil, fmt.Errorf("encode target binding: %w", err)
-		}
-		generation.targets[configured.ID] = &Target{
-			ID: configured.ID, ConnectionID: configured.Connection, ResourceType: configured.ResourceType, ComposeID: configured.ResourceID, Client: client,
-			PollInterval: interval, PollTimeout: targetTimeout, Snapshot: snapshot,
-			BindingVersion: bindingVersion,
-			Fingerprint:    bindingFingerprint(bindingVersion, configured.Type, configured.ResourceType, connection.BaseURL, configured.ResourceID),
+		switch configured.Type {
+		case "dokploy":
+			connection := configuredDokployConnections[configured.Connection]
+			client, err := dokploy.NewClient(connection.BaseURL, connection.APIKey, http.DefaultClient, logger)
+			if err != nil {
+				return nil, fmt.Errorf("compile Dokploy target: %w", err)
+			}
+			snapshot, err := json.Marshal(targetSnapshot{BindingVersion: bindingVersion, ID: configured.ID, Type: configured.Type, ResourceType: configured.ResourceType, ResourceID: configured.ResourceID, Connection: connectionSnapshot{ID: connection.ID, BaseURL: connection.BaseURL}})
+			if err != nil {
+				return nil, fmt.Errorf("encode target binding: %w", err)
+			}
+			generation.targets[configured.ID] = &Target{ID: configured.ID, Type: configured.Type, ConnectionID: configured.Connection, ResourceType: configured.ResourceType, ComposeID: configured.ResourceID, Client: client, PollInterval: interval, PollTimeout: targetTimeout, Snapshot: snapshot, BindingVersion: bindingVersion, Fingerprint: bindingFingerprint(bindingVersion, configured.Type, configured.ResourceType, connection.BaseURL, configured.ResourceID)}
+		case "http":
+			connection := configuredHTTPConnections[configured.Connection]
+			auth := httptarget.Authentication{Type: connection.Auth.Type, Value: connection.Auth.Value, Header: connection.Auth.Header}
+			client, err := httptarget.NewAuthenticatedClient(connection.BaseURL, auth, connection.AllowPrivateNetwork, http.DefaultClient)
+			if err != nil {
+				return nil, fmt.Errorf("compile HTTP target: %w", err)
+			}
+			httpRequest := httptarget.Request{Method: configured.Method, Path: configured.Path, Query: cloneHTTPQuery(configured.Query), Headers: cloneStringMap(configured.Headers), Body: compileHTTPBody(configured.Body), SuccessStatuses: append([]int(nil), configured.SuccessStatuses...)}
+			httpSnapshot := httpTargetSnapshot{Method: httpRequest.Method, Path: httpRequest.Path, Query: httpRequest.Query, Headers: httpRequest.Headers, Body: newHTTPBodySnapshot(httpRequest.Body), SuccessStatuses: httpRequest.SuccessStatuses}
+			snapshot, err := json.Marshal(targetSnapshot{BindingVersion: bindingVersion, ID: configured.ID, Type: configured.Type, Connection: connectionSnapshot{ID: connection.ID, BaseURL: connection.BaseURL}, HTTP: &httpSnapshot})
+			if err != nil {
+				return nil, fmt.Errorf("encode target binding: %w", err)
+			}
+			generation.targets[configured.ID] = &Target{ID: configured.ID, Type: configured.Type, ConnectionID: configured.Connection, HTTP: &HTTPExecutable{Client: client, Request: httpRequest}, PollInterval: interval, PollTimeout: targetTimeout, Snapshot: snapshot, BindingVersion: bindingVersion, Fingerprint: httpBindingFingerprint(bindingVersion, connection.ID, connection.BaseURL, httpSnapshot)}
 		}
 	}
 	generation.digest = bundleDigest(candidate)
@@ -221,6 +252,7 @@ func cloneBundle(bundle *config.Bundle) *config.Bundle {
 	copyBundle.GitLabSources = append([]config.GitLabSource(nil), bundle.GitLabSources...)
 	copyBundle.GitHubSources = append([]config.GitHubSource(nil), bundle.GitHubSources...)
 	copyBundle.DokployConnections = append([]config.DokployConnection(nil), bundle.DokployConnections...)
+	copyBundle.HTTPConnections = append([]config.HTTPConnection(nil), bundle.HTTPConnections...)
 	copyBundle.Targets = append([]config.Target(nil), bundle.Targets...)
 	copyBundle.Routes = append([]config.Route(nil), bundle.Routes...)
 	for index := range copyBundle.GitLabSources {
@@ -233,6 +265,10 @@ func cloneBundle(bundle *config.Bundle) *config.Bundle {
 	}
 	for index := range copyBundle.Targets {
 		copyBundle.Targets[index].PollTimeout = cloneDuration(bundle.Targets[index].PollTimeout)
+		copyBundle.Targets[index].Headers = cloneStringMap(bundle.Targets[index].Headers)
+		copyBundle.Targets[index].Query = cloneConfigHTTPQuery(bundle.Targets[index].Query)
+		copyBundle.Targets[index].Body = cloneConfigHTTPBody(bundle.Targets[index].Body)
+		copyBundle.Targets[index].SuccessStatuses = append([]int(nil), bundle.Targets[index].SuccessStatuses...)
 	}
 	for index := range copyBundle.Routes {
 		copyBundle.Routes[index].Action.Targets = append([]string(nil), bundle.Routes[index].Action.Targets...)
@@ -240,6 +276,82 @@ func cloneBundle(bundle *config.Bundle) *config.Bundle {
 		copyBundle.Routes[index].Match = cloneRouteMatch(bundle.Routes[index].Match)
 	}
 	return &copyBundle
+}
+
+func cloneStringMap(source map[string]string) map[string]string {
+	if source == nil {
+		return nil
+	}
+	copyMap := make(map[string]string, len(source))
+	for key, value := range source {
+		copyMap[key] = value
+	}
+	return copyMap
+}
+
+func cloneJSONValue(value any) any {
+	if value == nil {
+		return nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var copyValue any
+	if err := json.Unmarshal(data, &copyValue); err != nil {
+		return nil
+	}
+	return copyValue
+}
+
+func cloneConfigHTTPQuery(source map[string]config.HTTPStringList) map[string]config.HTTPStringList {
+	if source == nil {
+		return nil
+	}
+	copyQuery := make(map[string]config.HTTPStringList, len(source))
+	for name, values := range source {
+		copyQuery[name] = append(config.HTTPStringList(nil), values...)
+	}
+	return copyQuery
+}
+
+func cloneHTTPQuery(source map[string]config.HTTPStringList) map[string][]string {
+	if source == nil {
+		return nil
+	}
+	copyQuery := make(map[string][]string, len(source))
+	for name, values := range source {
+		copyQuery[name] = append([]string(nil), values...)
+	}
+	return copyQuery
+}
+
+func cloneConfigHTTPBody(source *config.HTTPBody) *config.HTTPBody {
+	if source == nil {
+		return nil
+	}
+	copyBody := *source
+	switch value := source.Value.(type) {
+	case map[string]config.HTTPStringList:
+		copyBody.Value = cloneConfigHTTPQuery(value)
+	default:
+		copyBody.Value = cloneJSONValue(value)
+	}
+	return &copyBody
+}
+
+func compileHTTPBody(source *config.HTTPBody) *httptarget.Body {
+	if source == nil {
+		return nil
+	}
+	body := &httptarget.Body{Type: source.Type, ContentType: source.ContentType}
+	switch source.Type {
+	case "form":
+		body.Value = cloneHTTPQuery(source.Value.(map[string]config.HTTPStringList))
+	default:
+		body.Value = cloneJSONValue(source.Value)
+	}
+	return body
 }
 
 func cloneRepositoryLimits(repositories []config.Repository) {
@@ -330,7 +442,39 @@ func cloneTarget(target *Target) *Target {
 	}
 	copyTarget := *target
 	copyTarget.Snapshot = append([]byte(nil), target.Snapshot...)
+	if target.HTTP != nil {
+		copyHTTP := *target.HTTP
+		copyHTTP.Request.Query = cloneStringSliceMap(target.HTTP.Request.Query)
+		copyHTTP.Request.Headers = cloneStringMap(target.HTTP.Request.Headers)
+		copyHTTP.Request.Body = cloneHTTPBody(target.HTTP.Request.Body)
+		copyHTTP.Request.SuccessStatuses = append([]int(nil), target.HTTP.Request.SuccessStatuses...)
+		copyTarget.HTTP = &copyHTTP
+	}
 	return &copyTarget
+}
+
+func cloneStringSliceMap(source map[string][]string) map[string][]string {
+	if source == nil {
+		return nil
+	}
+	copyMap := make(map[string][]string, len(source))
+	for key, value := range source {
+		copyMap[key] = append([]string(nil), value...)
+	}
+	return copyMap
+}
+
+func cloneHTTPBody(source *httptarget.Body) *httptarget.Body {
+	if source == nil {
+		return nil
+	}
+	copyBody := *source
+	if source.Type == "form" {
+		copyBody.Value = cloneStringSliceMap(source.Value.(map[string][]string))
+	} else {
+		copyBody.Value = cloneJSONValue(source.Value)
+	}
+	return &copyBody
 }
 
 // PollInterval returns the generation-wide bounded polling interval.
@@ -415,12 +559,35 @@ func matchesOptional(expected *string, actual string) bool {
 }
 
 type targetSnapshot struct {
-	BindingVersion int                `json:"binding_version"`
-	ID             string             `json:"id"`
-	Type           string             `json:"type"`
-	ResourceType   string             `json:"resource_type"`
-	ResourceID     string             `json:"resource_id"`
-	Connection     connectionSnapshot `json:"connection"`
+	BindingVersion int                 `json:"binding_version"`
+	ID             string              `json:"id"`
+	Type           string              `json:"type"`
+	ResourceType   string              `json:"resource_type"`
+	ResourceID     string              `json:"resource_id"`
+	Connection     connectionSnapshot  `json:"connection"`
+	HTTP           *httpTargetSnapshot `json:"http,omitempty"`
+}
+
+type httpTargetSnapshot struct {
+	Method          string              `json:"method"`
+	Path            string              `json:"path"`
+	Query           map[string][]string `json:"query,omitempty"`
+	Headers         map[string]string   `json:"headers,omitempty"`
+	Body            *httpBodySnapshot   `json:"body,omitempty"`
+	SuccessStatuses []int               `json:"success_statuses,omitempty"`
+}
+
+type httpBodySnapshot struct {
+	Type        string `json:"type"`
+	ContentType string `json:"content_type,omitempty"`
+	Value       any    `json:"value"`
+}
+
+func newHTTPBodySnapshot(source *httptarget.Body) *httpBodySnapshot {
+	if source == nil {
+		return nil
+	}
+	return &httpBodySnapshot{Type: source.Type, ContentType: source.ContentType, Value: cloneJSONValue(source.Value)}
 }
 
 type connectionSnapshot struct {
@@ -465,8 +632,17 @@ func newCanonicalRuleSnapshot(route config.Route) canonicalRuleSnapshot {
 }
 
 func bindingFingerprint(version int, targetType, resourceType, baseURL, resourceID string) string {
+	return bindingFingerprintFields(fmt.Sprintf("%d", version), targetType, resourceType, baseURL, resourceID)
+}
+
+func httpBindingFingerprint(version int, connectionID, baseURL string, request httpTargetSnapshot) string {
+	encoded, _ := json.Marshal(request)
+	return bindingFingerprintFields(fmt.Sprintf("%d", version), "http", connectionID, baseURL, string(encoded))
+}
+
+func bindingFingerprintFields(fields ...string) string {
 	hash := sha256.New()
-	for _, field := range []string{fmt.Sprintf("%d", version), targetType, resourceType, baseURL, resourceID} {
+	for _, field := range fields {
 		var length [8]byte
 		binary.BigEndian.PutUint64(length[:], uint64(len(field)))
 		_, _ = hash.Write(length[:])
@@ -488,16 +664,23 @@ func bundleDigest(bundle *config.Bundle) string {
 		Repositories []digestRepository `json:"repositories"`
 	}
 	type digestConnection struct {
+		Type    string `json:"type"`
 		ID      string `json:"id"`
 		BaseURL string `json:"base_url"`
 	}
 	type digestTarget struct {
-		ID           string `json:"id"`
-		Type         string `json:"type"`
-		Connection   string `json:"connection"`
-		ResourceType string `json:"resource_type"`
-		ResourceID   string `json:"resource_id"`
-		PollTimeout  string `json:"poll_timeout,omitempty"`
+		ID              string                           `json:"id"`
+		Type            string                           `json:"type"`
+		Connection      string                           `json:"connection"`
+		ResourceType    string                           `json:"resource_type"`
+		ResourceID      string                           `json:"resource_id"`
+		PollTimeout     string                           `json:"poll_timeout,omitempty"`
+		Method          string                           `json:"method,omitempty"`
+		Path            string                           `json:"path,omitempty"`
+		Query           map[string]config.HTTPStringList `json:"query,omitempty"`
+		Headers         map[string]string                `json:"headers,omitempty"`
+		Body            *config.HTTPBody                 `json:"body,omitempty"`
+		SuccessStatuses []int                            `json:"success_statuses,omitempty"`
 	}
 	type digestRoute struct {
 		ID       string            `json:"id"`
@@ -541,14 +724,17 @@ func bundleDigest(bundle *config.Bundle) string {
 		return safe.Sources[left].ID < safe.Sources[right].ID
 	})
 	for _, connection := range bundle.DokployConnections {
-		safe.Connections = append(safe.Connections, digestConnection{ID: connection.ID, BaseURL: connection.BaseURL})
+		safe.Connections = append(safe.Connections, digestConnection{Type: "dokploy", ID: connection.ID, BaseURL: connection.BaseURL})
+	}
+	for _, connection := range bundle.HTTPConnections {
+		safe.Connections = append(safe.Connections, digestConnection{Type: "http", ID: connection.ID, BaseURL: connection.BaseURL})
 	}
 	for _, target := range bundle.Targets {
 		pollTimeout := ""
 		if target.PollTimeout != nil {
 			pollTimeout = target.PollTimeout.Duration.String()
 		}
-		safe.Targets = append(safe.Targets, digestTarget{ID: target.ID, Type: target.Type, Connection: target.Connection, ResourceType: target.ResourceType, ResourceID: target.ResourceID, PollTimeout: pollTimeout})
+		safe.Targets = append(safe.Targets, digestTarget{ID: target.ID, Type: target.Type, Connection: target.Connection, ResourceType: target.ResourceType, ResourceID: target.ResourceID, PollTimeout: pollTimeout, Method: target.Method, Path: target.Path, Query: cloneConfigHTTPQuery(target.Query), Headers: cloneStringMap(target.Headers), Body: cloneConfigHTTPBody(target.Body), SuccessStatuses: append([]int(nil), target.SuccessStatuses...)})
 	}
 	for _, route := range bundle.Routes {
 		safe.Routes = append(safe.Routes, digestRoute{ID: route.ID, Priority: *route.Priority, Match: route.Match, Action: route.Action})

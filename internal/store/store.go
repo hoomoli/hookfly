@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/hoomoli/hookfly/migrations"
@@ -19,8 +20,10 @@ var ErrIncompatibleSchema = errors.New("incompatible database schema")
 
 // Store owns the single-process SQLite connection pool.
 type Store struct {
-	db  *sql.DB
-	now func() time.Time
+	db         *sql.DB
+	now        func() time.Time
+	notifyMu   sync.Mutex
+	notifySubs map[chan struct{}]struct{}
 }
 
 // Open opens path, configures SQLite, and applies embedded migrations.

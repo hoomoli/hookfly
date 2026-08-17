@@ -190,6 +190,32 @@ func TestTargetInventoryJoinsConfiguredTargetsWithOneSafeConnectionDiscovery(t *
 	}
 }
 
+func TestTargetInventoryMarksConfiguredHTTPTargetsAvailableWithoutDiscovery(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("HTTP inventory unexpectedly sent %s", r.URL.String())
+	}))
+	defer server.Close()
+	bundle := generationBundle("https://dokploy.example.invalid")
+	bundle.DokployConnections = nil
+	bundle.HTTPConnections = []config.HTTPConnection{{
+		ID: "admin", BaseURL: server.URL, AllowPrivateNetwork: true,
+		Auth: config.HTTPAuthentication{Type: "bearer", Value: "token"},
+	}}
+	bundle.Targets = []config.Target{{ID: "application-admin", Type: "http", Connection: "admin", Method: http.MethodPost, Path: "/api/deploy"}}
+	bundle.Routes[0].Action.Targets = []string{"application-admin"}
+	generation, err := Compile(bundle, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := NewManager(generation, &managerStore{}, Options{}).TargetInventory(context.Background())
+	if len(result.Errors) != 0 || len(result.Targets) != 1 {
+		t.Fatalf("inventory = %#v", result)
+	}
+	if got := result.Targets[0]; got.ID != "application-admin" || got.Condition != TargetConditionAvailable || got.Name != "application-admin" || len(got.Containers) != 0 {
+		t.Fatalf("target = %#v", got)
+	}
+}
+
 func TestTargetInventoryRetainsConfiguredTargetsWhenDiscoveryFails(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"api_key":"must-not-return"}`, http.StatusBadGateway)

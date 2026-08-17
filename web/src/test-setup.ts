@@ -35,6 +35,19 @@ Object.defineProperties(HTMLElement.prototype, {
   scrollIntoView: { configurable: true, value: () => undefined },
 });
 
+// jsdom has no EventSource; the inert stub keeps app-level tests offline.
+if (typeof globalThis.EventSource === "undefined") {
+  class StubEventSource {
+    onopen: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    onmessage: (() => void) | null = null;
+    addEventListener() { /* inert */ }
+    removeEventListener() { /* inert */ }
+    close() { /* inert */ }
+  }
+  Object.defineProperty(globalThis, "EventSource", { configurable: true, writable: true, value: StubEventSource });
+}
+
 afterEach(async () => {
   cleanup();
   vi.restoreAllMocks();

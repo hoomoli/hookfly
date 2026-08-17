@@ -52,7 +52,7 @@ function AppContent({ session, signOut }: { session: AuthSession; signOut: () =>
     window.history.replaceState(null, "", `${window.location.pathname}${nextSearch}`);
     setSearch(nextSearch);
   }, []);
-  const notifications = useNotifications(openNotificationEvent, 5_000, repositories);
+  const notifications = useNotifications(openNotificationEvent, repositories);
   const onHistoryCleared = useCallback(() => {
     const next = new URLSearchParams(window.location.search);
     next.delete("id");

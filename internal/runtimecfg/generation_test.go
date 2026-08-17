@@ -97,6 +97,32 @@ func TestConnectionSummariesAreStableSafeAndDefensive(t *testing.T) {
 	}
 }
 
+func TestCompileHTTPTargetKeepsCredentialOutOfRuntimeProjections(t *testing.T) {
+	bundle := generationBundle("https://dokploy.example.invalid")
+	bundle.DokployConnections = nil
+	bundle.HTTPConnections = []config.HTTPConnection{{ID: "admin", BaseURL: "https://admin.example.invalid", Auth: config.HTTPAuthentication{Type: "api_key", Value: "http-secret", Header: "X-API-Token"}}}
+	bundle.Targets = []config.Target{{
+		ID: "production", Type: "http", Connection: "admin", Method: http.MethodPost, Path: "/api/deploy",
+		Headers: map[string]string{"X-Deploy-Source": "hookfly"}, Body: &config.HTTPBody{Type: "json", Value: map[string]any{"ref": "{{ event.ref }}"}}, SuccessStatuses: []int{http.StatusAccepted},
+	}}
+	generation, err := Compile(bundle, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, found := generation.Target("production")
+	if !found || target.Type != "http" || target.HTTP == nil || target.HTTP.Request.Path != "/api/deploy" {
+		t.Fatalf("Target() = %#v/%v", target, found)
+	}
+	encoded, err := json.Marshal(struct {
+		Connections []ConnectionSummary `json:"connections"`
+		Snapshot    []byte              `json:"snapshot"`
+		Digest      string              `json:"digest"`
+	}{generation.Connections(), target.Snapshot, generation.Digest()})
+	if err != nil || strings.Contains(string(encoded), "http-secret") {
+		t.Fatalf("runtime projection = %s / %v", encoded, err)
+	}
+}
+
 func TestGenerationSelectsGitLabSourceByToken(t *testing.T) {
 	bundle := generationBundle("https://dokploy.example.invalid")
 	bundle.GitLabSources = append(bundle.GitLabSources, config.GitLabSource{

@@ -64,6 +64,13 @@ export function listNotifications(after?: string): Promise<NotificationFeed> {
   return request<NotificationFeed>(`/api/v1/notifications?${query.toString()}`);
 }
 
+export function openNotificationStream(after?: string): EventSource {
+  const query = new URLSearchParams();
+  if (after) query.set("after", after);
+  const suffix = query.size ? `?${query.toString()}` : "";
+  return new EventSource(`/api/v1/notifications/stream${suffix}`);
+}
+
 export async function listConnections(): Promise<ConnectionSummary[]> {
   const response = await request<{ connections: ConnectionSummary[] }>("/api/v1/connections");
   return response.connections;

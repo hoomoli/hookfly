@@ -268,6 +268,48 @@ func TestValidateAndCanonicalizeRejectsInvalidBundleReferencesAndValues(t *testi
 	}
 }
 
+func TestValidateAndCanonicalizeRejectsUnsafeHTTPTargets(t *testing.T) {
+	validHTTP := func() *Bundle {
+		bundle := validBundle()
+		bundle.DokployConnections = nil
+		bundle.HTTPConnections = []HTTPConnection{{ID: "admin", BaseURL: "https://admin.example.invalid", Auth: HTTPAuthentication{Type: "api_key", Value: "secret", Header: "X-API-Token"}}}
+		bundle.Targets = []Target{{
+			ID: "production", Type: "http", Connection: "admin", Method: "POST", Path: "/api/deploy",
+			Headers: map[string]string{"X-Deploy-Source": "hookfly"}, Body: &HTTPBody{Type: "json", Value: map[string]any{"ref": "{{ event.ref }}"}}, SuccessStatuses: []int{202},
+		}}
+		bundle.Routes[0].Action.Targets = []string{"production"}
+		return bundle
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*Bundle)
+		want   string
+	}{
+		{name: "non-origin URL", mutate: func(bundle *Bundle) { bundle.HTTPConnections[0].BaseURL = "https://admin.example.invalid/base" }, want: "invalid HTTP URL"},
+		{name: "unsafe path", mutate: func(bundle *Bundle) { bundle.Targets[0].Path = "https://other.example.invalid/deploy" }, want: "invalid HTTP path"},
+		{name: "unsupported method", mutate: func(bundle *Bundle) { bundle.Targets[0].Method = "CONNECT" }, want: "unsupported HTTP method"},
+		{name: "reserved header", mutate: func(bundle *Bundle) { bundle.Targets[0].Headers["Authorization"] = "bad" }, want: "reserved HTTP header"},
+		{name: "unknown template", mutate: func(bundle *Bundle) {
+			bundle.Targets[0].Body = &HTTPBody{Type: "json", Value: map[string]any{"ref": "{{ event.raw_payload }}"}}
+		}, want: "unsupported HTTP template variable"},
+		{name: "malformed template", mutate: func(bundle *Bundle) {
+			bundle.Targets[0].Body = &HTTPBody{Type: "json", Value: map[string]any{"ref": "{{}}"}}
+		}, want: "invalid HTTP template"},
+		{name: "request environment reference", mutate: func(bundle *Bundle) { bundle.Targets[0].Headers["X-Deploy-Source"] = "${DEPLOY_SECRET}" }, want: "must not use environment references"},
+		{name: "private network without opt in", mutate: func(bundle *Bundle) { bundle.HTTPConnections[0].BaseURL = "http://127.0.0.1:8080" }, want: "requires allow_private_network"},
+		{name: "non-success status", mutate: func(bundle *Bundle) { bundle.Targets[0].SuccessStatuses = []int{500} }, want: "invalid HTTP success status"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bundle := validHTTP()
+			test.mutate(bundle)
+			err := ValidateAndCanonicalize(bundle)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("ValidateAndCanonicalize() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestValidateAndCanonicalizeSortsSemanticIDsAndRoutesByPrecedence(t *testing.T) {
 	bundle := validBundle()
 	bundle.GitLabSources = append(bundle.GitLabSources, GitLabSource{ID: "alpha", Token: "alpha-token", Repositories: []Repository{{ID: "z", Name: "z", ExternalID: "2"}, {ID: "a", Name: "a", ExternalID: "3"}}})

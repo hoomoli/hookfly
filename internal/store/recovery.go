@@ -121,5 +121,6 @@ func (s *Store) TerminateIncompatibleActive(ctx context.Context, binding ActiveB
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit incompatible active recovery: %w", err)
 	}
+	s.notifyChanged()
 	return nil
 }
