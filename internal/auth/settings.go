@@ -10,8 +10,10 @@ import (
 )
 
 const (
-	ModeOIDC = "oidc"
-	ModeNone = "none"
+	ModeOIDC                      = "oidc"
+	ModeNone                      = "none"
+	DisplayClaimPreferredUsername = "preferred_username"
+	DisplayClaimEmail             = "email"
 )
 
 // Settings contains validated management-authentication configuration.
@@ -22,6 +24,7 @@ type Settings struct {
 	ClientID       string
 	ClientSecret   string
 	Scopes         []string
+	DisplayClaim   string
 	AllowedGroups  []string
 	SessionSecret  []byte
 }
@@ -36,7 +39,14 @@ func LoadSettings(lookup func(string) (string, bool)) (Settings, error) {
 	if mode != ModeOIDC && mode != ModeNone {
 		return Settings{}, fmt.Errorf("HOOKFLY_AUTH_MODE must be oidc or none")
 	}
-	settings := Settings{Mode: mode}
+	displayClaim := DisplayClaimPreferredUsername
+	if value, found := lookup("HOOKFLY_AUTH_DISPLAY_CLAIM"); found {
+		displayClaim = value
+	}
+	if displayClaim != DisplayClaimPreferredUsername && displayClaim != DisplayClaimEmail {
+		return Settings{}, fmt.Errorf("HOOKFLY_AUTH_DISPLAY_CLAIM must be preferred_username or email")
+	}
+	settings := Settings{Mode: mode, DisplayClaim: displayClaim}
 	if mode == ModeNone {
 		return settings, nil
 	}
@@ -71,6 +81,9 @@ func LoadSettings(lookup func(string) (string, bool)) (Settings, error) {
 	settings.Scopes = splitUnique(scopeValue)
 	if !slices.Contains(settings.Scopes, "openid") {
 		return Settings{}, fmt.Errorf("AUTHENTIK_OAUTH_SCOPES must include openid")
+	}
+	if settings.DisplayClaim == DisplayClaimEmail && !slices.Contains(settings.Scopes, "email") {
+		return Settings{}, fmt.Errorf("AUTHENTIK_OAUTH_SCOPES must include email when HOOKFLY_AUTH_DISPLAY_CLAIM is email")
 	}
 
 	groupValue, groupsConfigured := lookup("HOOKFLY_AUTH_ALLOWED_GROUPS")

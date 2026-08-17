@@ -32,11 +32,14 @@ AUTHENTIK_ISSUER=https://authentik.example.invalid/application/o/hookfly/
 AUTHENTIK_CLIENT_ID=<protected value>
 AUTHENTIK_CLIENT_SECRET=<protected value>
 AUTHENTIK_OAUTH_SCOPES=openid,profile
+HOOKFLY_AUTH_DISPLAY_CLAIM=preferred_username
 HOOKFLY_AUTH_ALLOWED_GROUPS=hookfly-users
 HOOKFLY_AUTH_SESSION_SECRET=<Base64-encoded 32 random bytes>
 ```
 
-Set Authentik's exact redirect URI to `https://webhook.chuandashow.com/api/v1/auth/callback`. The selected scope/property mappings must expose `sub`, `preferred_username`, `name`, and a string-array `groups` claim. `HOOKFLY_AUTH_ALLOWED_GROUPS` accepts comma-, space-, or semicolon-separated case-sensitive group names and defaults to `hookfly-users`; a member of any configured group receives all current management permissions. Hookfly stores no OAuth tokens, email, or groups in its eight-hour encrypted browser session.
+Set Authentik's exact redirect URI to `https://webhook.chuandashow.com/api/v1/auth/callback`. `HOOKFLY_AUTH_DISPLAY_CLAIM` accepts exactly `preferred_username` or `email` and defaults to `preferred_username`, preserving the existing display and session projection. The selected scope/property mappings must expose `sub`, `preferred_username`, `name`, and a string-array `groups` claim. When the display claim is `email`, `AUTHENTIK_OAUTH_SCOPES` must also include `email`, the UserInfo response must contain a nonblank string `email` claim, and `/api/v1/auth/session` returns that value as `display_name` without returning `username`.
+
+The display claim changes presentation only. Hookfly continues to derive the persistent actor ID from the OIDC issuer and `sub`; group checks and authorization do not use the email address. `HOOKFLY_AUTH_ALLOWED_GROUPS` accepts comma-, space-, or semicolon-separated case-sensitive group names and defaults to `hookfly-users`; a member of any configured group receives all current management permissions. Hookfly stores no OAuth tokens or groups in its eight-hour encrypted browser session. In email display mode, the selected email is stored only as the encrypted session display name.
 
 Generate an independent session secret with `openssl rand -base64 32`. Rotating it immediately invalidates all Hookfly sessions. Local development may explicitly set `HOOKFLY_AUTH_MODE=none`; this skips OIDC, shows `Local development` in the account control, and must not be used for a remote deployment.
 

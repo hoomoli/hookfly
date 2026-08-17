@@ -54,6 +54,7 @@ type oidcIdentity struct {
 	Nonce           string
 	Name            string
 	Username        string
+	Email           string
 	Groups          []string
 }
 
@@ -189,10 +190,20 @@ func (s *OIDCService) Callback(writer http.ResponseWriter, request *http.Request
 		writeAuthorizationDeniedPage(writer)
 		return
 	}
+	sessionDisplayName := displayName(identity)
+	sessionUsername := identity.Username
+	if s.settings.DisplayClaim == DisplayClaimEmail {
+		sessionDisplayName = strings.TrimSpace(identity.Email)
+		sessionUsername = ""
+		if sessionDisplayName == "" {
+			s.writeAuthenticationFailure(writer, http.StatusUnauthorized)
+			return
+		}
+	}
 	actorDigest := sha256.Sum256([]byte(s.settings.Issuer + "\x00" + identity.TokenSubject))
 	if err := s.issueSession(writer, sessionData{
-		ActorID: "oidc:" + hex.EncodeToString(actorDigest[:]), DisplayName: displayName(identity),
-		Username: identity.Username, Provider: "authentik",
+		ActorID: "oidc:" + hex.EncodeToString(actorDigest[:]), DisplayName: sessionDisplayName,
+		Username: sessionUsername, Provider: "authentik",
 	}); err != nil {
 		s.writeAuthenticationFailure(writer, http.StatusInternalServerError)
 		return

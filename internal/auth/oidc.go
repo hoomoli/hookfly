@@ -98,7 +98,7 @@ func (b *discoveredOIDCBackend) Exchange(ctx context.Context, request exchangeRe
 	}
 	return oidcIdentity{
 		TokenSubject: tokenClaims.Subject, UserInfoSubject: claims.Subject, Nonce: tokenClaims.Nonce,
-		Name: claims.Name, Username: claims.Username, Groups: claims.Groups,
+		Name: claims.Name, Username: claims.Username, Email: claims.Email, Groups: claims.Groups,
 	}, nil
 }
 
@@ -106,6 +106,7 @@ type userInfoClaims struct {
 	Subject  string
 	Name     string
 	Username string
+	Email    string
 	Groups   []string
 }
 
@@ -114,6 +115,7 @@ func parseUserInfoClaims(raw json.RawMessage) (userInfoClaims, error) {
 		Subject  string          `json:"sub"`
 		Name     string          `json:"name"`
 		Username string          `json:"preferred_username"`
+		Email    json.RawMessage `json:"email"`
 		Groups   json.RawMessage `json:"groups"`
 	}
 	if err := json.Unmarshal(raw, &claims); err != nil || claims.Subject == "" {
@@ -123,7 +125,9 @@ func parseUserInfoClaims(raw json.RawMessage) (userInfoClaims, error) {
 	if len(claims.Groups) == 0 || string(claims.Groups) == "null" || json.Unmarshal(claims.Groups, &groups) != nil {
 		return userInfoClaims{}, authorizationDeniedError{}
 	}
-	return userInfoClaims{Subject: claims.Subject, Name: claims.Name, Username: claims.Username, Groups: groups}, nil
+	var email string
+	_ = json.Unmarshal(claims.Email, &email)
+	return userInfoClaims{Subject: claims.Subject, Name: claims.Name, Username: claims.Username, Email: email, Groups: groups}, nil
 }
 
 type authorizationDeniedError struct{}

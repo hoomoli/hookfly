@@ -38,11 +38,54 @@ func TestSettingsLoadSecureOIDCDefaults(t *testing.T) {
 	if strings.Join(settings.Scopes, ",") != "openid,profile" {
 		t.Fatalf("scopes = %#v", settings.Scopes)
 	}
+	if settings.DisplayClaim != DisplayClaimPreferredUsername {
+		t.Fatalf("display claim = %q, want %q", settings.DisplayClaim, DisplayClaimPreferredUsername)
+	}
 	if strings.Join(settings.AllowedGroups, ",") != "hookfly-users" {
 		t.Fatalf("groups = %#v", settings.AllowedGroups)
 	}
 	if len(settings.SessionSecret) != 32 {
 		t.Fatalf("session secret bytes = %d", len(settings.SessionSecret))
+	}
+}
+
+func TestSettingsAcceptSupportedDisplayClaims(t *testing.T) {
+	for _, claim := range []string{DisplayClaimPreferredUsername, DisplayClaimEmail} {
+		t.Run(claim, func(t *testing.T) {
+			environment := validOIDCEnvironment()
+			environment["HOOKFLY_AUTH_DISPLAY_CLAIM"] = claim
+			if claim == DisplayClaimEmail {
+				environment["AUTHENTIK_OAUTH_SCOPES"] = "openid,profile,email"
+			}
+			settings, err := LoadSettings(mapLookup(environment))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if settings.DisplayClaim != claim {
+				t.Fatalf("display claim = %q, want %q", settings.DisplayClaim, claim)
+			}
+		})
+	}
+}
+
+func TestSettingsRejectUnsupportedDisplayClaims(t *testing.T) {
+	for _, claim := range []string{"", "name", "Email", " preferred_username "} {
+		t.Run(claim, func(t *testing.T) {
+			environment := validOIDCEnvironment()
+			environment["HOOKFLY_AUTH_DISPLAY_CLAIM"] = claim
+			if _, err := LoadSettings(mapLookup(environment)); err == nil || !strings.Contains(err.Error(), "HOOKFLY_AUTH_DISPLAY_CLAIM") {
+				t.Fatalf("LoadSettings() error = %v, want display claim rejection", err)
+			}
+		})
+	}
+}
+
+func TestSettingsRequireEmailScopeForEmailDisplayClaim(t *testing.T) {
+	environment := validOIDCEnvironment()
+	environment["HOOKFLY_AUTH_DISPLAY_CLAIM"] = DisplayClaimEmail
+	environment["AUTHENTIK_OAUTH_SCOPES"] = "openid,profile"
+	if _, err := LoadSettings(mapLookup(environment)); err == nil || !strings.Contains(err.Error(), "AUTHENTIK_OAUTH_SCOPES") {
+		t.Fatalf("LoadSettings() error = %v, want missing email scope rejection", err)
 	}
 }
 

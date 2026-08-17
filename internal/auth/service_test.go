@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -77,6 +79,93 @@ func TestSessionEndpointReturnsOnlyApprovedUserProjection(t *testing.T) {
 		if strings.Contains(strings.ToLower(recorder.Body.String()), forbidden) {
 			t.Fatalf("session response contains %q: %s", forbidden, recorder.Body.String())
 		}
+	}
+}
+
+func TestEmailDisplayClaimReturnsEmailWithoutExposingUsername(t *testing.T) {
+	now := time.Date(2026, 8, 12, 8, 0, 0, 0, time.UTC)
+	backend := &fakeOIDCBackend{identity: oidcIdentity{
+		TokenSubject: "subject-1", UserInfoSubject: "subject-1", Nonce: "nonce",
+		Name: "Display Name", Username: "private-username", Email: "operator@example.com", Groups: []string{"hookfly-users"},
+	}}
+	environment := validOIDCEnvironment()
+	environment["HOOKFLY_AUTH_DISPLAY_CLAIM"] = DisplayClaimEmail
+	environment["AUTHENTIK_OAUTH_SCOPES"] = "openid,profile,email"
+	settings, err := LoadSettings(mapLookup(environment))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := newOIDCService(settings, backend, func() time.Time { return now }, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	transaction := loginTransaction{Version: 1, State: "state", Nonce: "nonce", Verifier: "verifier", ReturnTo: "/", IssuedAt: now.Unix(), ExpiresAt: now.Add(loginLifetime).Unix()}
+	cookieValue, err := service.encodeLoginCookie(transaction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	callbackRequest := httptest.NewRequest(http.MethodGet, "/api/v1/auth/callback?code=code&state=state", nil)
+	callbackRequest.AddCookie(&http.Cookie{Name: loginCookieName, Value: cookieValue})
+	callback := httptest.NewRecorder()
+	service.Callback(callback, callbackRequest)
+	if callback.Code != http.StatusFound {
+		t.Fatalf("callback status = %d body=%s", callback.Code, callback.Body.String())
+	}
+
+	sessionRequest := httptest.NewRequest(http.MethodGet, "/api/v1/auth/session", nil)
+	sessionRequest.AddCookie(responseCookie(t, callback, sessionCookieName))
+	session := httptest.NewRecorder()
+	service.Session(session, sessionRequest)
+	want := `{"user":{"display_name":"operator@example.com","provider":"authentik"},"expires_at":"2026-08-12T16:00:00Z"}` + "\n"
+	if session.Code != http.StatusOK || session.Body.String() != want {
+		t.Fatalf("session = %d %q, want %q", session.Code, session.Body.String(), want)
+	}
+	if strings.Contains(session.Body.String(), "private-username") || strings.Contains(session.Body.String(), `"username"`) {
+		t.Fatalf("email session exposed username: %s", session.Body.String())
+	}
+
+	principal, err := service.Authenticate(sessionRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte(settings.Issuer + "\x00subject-1"))
+	wantActorID := "oidc:" + hex.EncodeToString(digest[:])
+	if principal.ID != wantActorID {
+		t.Fatalf("actor ID = %q, want issuer+sub ID %q", principal.ID, wantActorID)
+	}
+}
+
+func TestEmailDisplayClaimRejectsMissingOrBlankEmail(t *testing.T) {
+	for _, email := range []string{"", " \t "} {
+		t.Run(fmt.Sprintf("email_%q", email), func(t *testing.T) {
+			now := time.Date(2026, 8, 12, 8, 0, 0, 0, time.UTC)
+			backend := &fakeOIDCBackend{identity: oidcIdentity{
+				TokenSubject: "subject-1", UserInfoSubject: "subject-1", Nonce: "nonce",
+				Name: "Fallback Name", Username: "fallback-username", Email: email, Groups: []string{"hookfly-users"},
+			}}
+			environment := validOIDCEnvironment()
+			environment["HOOKFLY_AUTH_DISPLAY_CLAIM"] = DisplayClaimEmail
+			environment["AUTHENTIK_OAUTH_SCOPES"] = "openid,profile,email"
+			settings, err := LoadSettings(mapLookup(environment))
+			if err != nil {
+				t.Fatal(err)
+			}
+			service := newOIDCService(settings, backend, func() time.Time { return now }, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			transaction := loginTransaction{Version: 1, State: "state", Nonce: "nonce", Verifier: "verifier", ReturnTo: "/", IssuedAt: now.Unix(), ExpiresAt: now.Add(loginLifetime).Unix()}
+			cookieValue, err := service.encodeLoginCookie(transaction)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodGet, "/api/v1/auth/callback?code=code&state=state", nil)
+			request.AddCookie(&http.Cookie{Name: loginCookieName, Value: cookieValue})
+			recorder := httptest.NewRecorder()
+
+			service.Callback(recorder, request)
+
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d body=%s, want 401", recorder.Code, recorder.Body.String())
+			}
+			if findResponseCookie(recorder, sessionCookieName) != nil {
+				t.Fatal("missing email created a session")
+			}
+		})
 	}
 }
 
@@ -374,6 +463,26 @@ func TestUserInfoClaimsRequireStringGroups(t *testing.T) {
 				t.Fatalf("parseUserInfoClaims() error = %v, want authorization denial", err)
 			}
 		})
+	}
+}
+
+func TestUserInfoClaimsParseEmail(t *testing.T) {
+	claims, err := parseUserInfoClaims(json.RawMessage(`{"sub":"s","groups":["hookfly-users"],"preferred_username":"dj","email":"operator@example.com"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.Email != "operator@example.com" {
+		t.Fatalf("email = %q", claims.Email)
+	}
+}
+
+func TestUserInfoClaimsIgnoreNonStringEmailForPreferredUsernameCompatibility(t *testing.T) {
+	claims, err := parseUserInfoClaims(json.RawMessage(`{"sub":"s","groups":["hookfly-users"],"preferred_username":"dj","email":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.Email != "" {
+		t.Fatalf("email = %q, want empty non-string claim", claims.Email)
 	}
 }
 

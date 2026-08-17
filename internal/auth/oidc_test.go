@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -135,7 +136,8 @@ func TestRealOIDCAdapterUsesAuthorizationCodePKCEAndVerifiedUserInfo(t *testing.
 				t.Errorf("UserInfo Authorization = %q", r.Header.Get("Authorization"))
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"sub": "subject-1", "name": "Display Name", "preferred_username": "dj", "groups": []string{"hookfly-users"},
+				"sub": "subject-1", "name": "Display Name", "preferred_username": "dj",
+				"email": "operator@example.com", "groups": []string{"hookfly-users"},
 			})
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -144,6 +146,8 @@ func TestRealOIDCAdapterUsesAuthorizationCodePKCEAndVerifiedUserInfo(t *testing.
 	defer server.Close()
 	client := rewriteHTTPSClient(t, server.URL)
 	settings := realAdapterSettings(t, issuer)
+	settings.DisplayClaim = DisplayClaimEmail
+	settings.Scopes = append(settings.Scopes, "email")
 	service, err := NewOIDCService(oidc.ClientContext(context.Background(), client), settings, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
@@ -167,7 +171,7 @@ func TestRealOIDCAdapterUsesAuthorizationCodePKCEAndVerifiedUserInfo(t *testing.
 	wantChallenge := base64.RawURLEncoding.EncodeToString(digest[:])
 	if authorizationURL.Scheme != "https" || authorizationURL.Host != "idp.example.invalid" || authorizationURL.Path != "/authorize" ||
 		query.Get("response_type") != "code" || query.Get("client_id") != "hookfly-client" ||
-		query.Get("redirect_uri") != "https://webhook.example.invalid/api/v1/auth/callback" || query.Get("scope") != "openid profile" ||
+		query.Get("redirect_uri") != "https://webhook.example.invalid/api/v1/auth/callback" || query.Get("scope") != "openid profile email" ||
 		query.Get("state") != transaction.State || query.Get("nonce") != transaction.Nonce || query.Get("code_challenge_method") != "S256" || query.Get("code_challenge") != wantChallenge {
 		t.Fatalf("authorization URL = %q", authorizationURL.String())
 	}
@@ -189,6 +193,13 @@ func TestRealOIDCAdapterUsesAuthorizationCodePKCEAndVerifiedUserInfo(t *testing.
 	}
 	if findResponseCookie(callback, sessionCookieName) == nil {
 		t.Fatal("verified callback did not create a session")
+	}
+	sessionRequest := httptest.NewRequest(http.MethodGet, "/api/v1/auth/session", nil)
+	sessionRequest.AddCookie(responseCookie(t, callback, sessionCookieName))
+	session := httptest.NewRecorder()
+	service.Session(session, sessionRequest)
+	if !strings.Contains(session.Body.String(), `"display_name":"operator@example.com"`) || strings.Contains(session.Body.String(), `"username"`) {
+		t.Fatalf("email session projection = %s", session.Body.String())
 	}
 	for _, code := range []string{"wrong-issuer", "wrong-audience", "expired"} {
 		if _, err := service.backend.Exchange(oidc.ClientContext(context.Background(), client), exchangeRequest{Code: code, Verifier: transaction.Verifier}); err == nil {
