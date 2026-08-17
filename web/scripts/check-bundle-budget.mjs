@@ -5,6 +5,11 @@ import { gzipSync } from "node:zlib";
 
 const dist = new URL("../dist/", import.meta.url);
 const html = readFileSync(new URL("index.html", dist), "utf8");
+const runtimeConfigPosition = html.indexOf('src="/runtime-config.js"');
+const entryScriptPosition = html.search(/<script[^>]+src="\/assets\/[^\"]+\.js"/);
+if (runtimeConfigPosition < 0 || entryScriptPosition < 0 || runtimeConfigPosition > entryScriptPosition) {
+  throw new Error("runtime configuration must load before the application entry module");
+}
 const sources = [...html.matchAll(/<script[^>]+src="([^"]+\.js)"/g)].map((match) => match[1].replace(/^\//, ""));
 if (sources.length === 0) throw new Error("no entry JavaScript found in dist/index.html");
 
