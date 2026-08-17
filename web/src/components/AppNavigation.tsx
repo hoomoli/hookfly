@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import type { AuthSession, Repository, RepositorySelection } from "../types";
 import { Button } from "./ui/button";
 import { UserMenu } from "./UserMenu";
+import { siteName as configuredSiteName } from "../site-config";
 
 export type AppPage = "ledger" | "targets" | "connections";
 
@@ -13,6 +14,7 @@ interface Props {
   onSelectPage: (page: AppPage) => void;
   session: AuthSession;
   onSignOut: () => Promise<void> | void;
+  siteName?: string;
 }
 
 function isSelected(current: RepositorySelection, candidate: RepositorySelection) {
@@ -26,13 +28,13 @@ function isSelected(current: RepositorySelection, candidate: RepositorySelection
 const activeClass = "h-11 min-w-11 shrink-0 justify-between bg-primary/10 px-3 text-primary hover:bg-primary/15 lg:w-full";
 const idleClass = "h-11 min-w-11 shrink-0 justify-between px-3 text-muted-foreground hover:text-foreground lg:w-full";
 
-export function AppNavigation({ repositories, selected, page, onSelectRepository, onSelectPage, session, onSignOut }: Props) {
+export function AppNavigation({ repositories, selected, page, onSelectRepository, onSelectPage, session, onSignOut, siteName = configuredSiteName }: Props) {
   const { t } = useTranslation();
   return (
     <nav className="flex h-full min-w-0 items-center gap-4 overflow-x-auto px-3 py-2 lg:flex-col lg:items-stretch lg:overflow-x-visible lg:px-3 lg:py-5" aria-label={t("navigation.ariaLabel")}>
       <div className="hidden items-center gap-3 px-2 pb-5 lg:flex">
         <span className="grid size-9 place-items-center rounded-[11px] bg-primary text-xs font-semibold text-primary-foreground shadow-sm" aria-hidden="true">HF</span>
-        <span><strong className="block text-sm font-semibold tracking-[-0.01em]">Hookfly</strong><small className="mt-0.5 block text-[10px] text-muted-foreground">{t("navigation.deploymentLedger")}</small></span>
+        <span><strong className="block text-sm font-semibold tracking-[-0.01em]">{siteName}</strong><small className="mt-0.5 block text-[10px] text-muted-foreground">{t("navigation.deploymentLedger")}</small></span>
       </div>
 
       <section className="flex min-w-0 shrink-0 items-center gap-1 lg:block" aria-labelledby="events-navigation-title">

@@ -2,6 +2,7 @@ import { createInstance, type i18n as I18nInstance } from "i18next";
 import { initReactI18next } from "react-i18next";
 import { en } from "./locales/en";
 import { zhCN } from "./locales/zh-CN";
+import { siteName } from "./site-config";
 
 export const LANGUAGE_STORAGE_KEY = "hookfly-language";
 export const SUPPORTED_LANGUAGES = ["en", "zh-CN"] as const;
@@ -35,7 +36,7 @@ export function initializeI18n(instance: I18nInstance, storage: Storage): I18nIn
     lng: language,
     fallbackLng: "en",
     supportedLngs: [...SUPPORTED_LANGUAGES],
-    interpolation: { escapeValue: false },
+    interpolation: { escapeValue: false, defaultVariables: { siteName } },
     initAsync: false,
   });
   document.documentElement.lang = language;

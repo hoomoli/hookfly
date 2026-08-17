@@ -86,6 +86,8 @@ Hookfly compiles one immutable configuration candidate from `hookfly.yaml` and i
 
 `deploy/compose.example.yaml` binds the host `HOOKFLY_CONFIG_DIR` read-only at `/etc/hookfly`, sets `HOOKFLY_CONFIG=/etc/hookfly/hookfly.yaml`, and uses `create_host_path: false`. It does not mount a Docker socket; SQLite lives in `hookfly-data`.
 
+Set `HOOKFLY_SITE_NAME` to change display-only frontend branding, including the sidebar, page eyebrow, browser title, and notifications. It defaults to `Hookfly` and does not rename images, the binary, API paths, or configuration files.
+
 The Compose example publishes no container port directly. Both services join an internal application network and the external `HOOKFLY_PROXY_NETWORK`, which defaults to Dokploy's `dokploy-network`. Traefik terminates TLS and routes `Host(HOOKFLY_ROUTE_HOST) && PathPrefix(/hooks/)` to backend `:8080` with higher priority; the host-wide router sends every other request to frontend Nginx `:8080`. Nginx serves the SPA and proxies `/api/*` to backend `:8081` over the internal network. Backend `:8081` has neither a host publication nor a Traefik router.
 
 Set `HOOKFLY_ROUTE_HOST=webhook.chuandashow.com` and keep it aligned with `HOOKFLY_EXTERNAL_URL`. `HOOKFLY_HTTPS_ENTRYPOINT`, `HOOKFLY_CERT_RESOLVER`, router priorities, and `HOOKFLY_PROXY_NETWORK` are deployment inputs. Use either the repository Traefik labels or Dokploy Domain resources as the routing source of truth, not both.

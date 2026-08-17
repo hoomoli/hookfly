@@ -48,6 +48,7 @@ services:
     restart: unless-stopped
     environment:
       HOOKFLY_ADMIN_UPSTREAM: http://backend:8081
+      HOOKFLY_SITE_NAME: ${HOOKFLY_SITE_NAME:-Hookfly}
     depends_on:
       backend:
         condition: service_healthy

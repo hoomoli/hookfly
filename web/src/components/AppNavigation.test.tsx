@@ -73,3 +73,10 @@ it("keeps the current user reachable in desktop and compact navigation", () => {
   expect(account).toHaveTextContent("DJ");
   expect(account.parentElement).toHaveClass("lg:mt-auto");
 });
+
+it("shows the configured site name in the desktop brand", () => {
+  // Break caught: a deployment-specific brand is ignored and the product name leaks into the UI.
+  render(<AppNavigation repositories={[]} selected={{ kind: "all" }} page="ledger" onSelectRepository={vi.fn()} onSelectPage={vi.fn()} session={session} onSignOut={vi.fn()} siteName="Deployment Hub" />);
+
+  expect(screen.getByText("Deployment Hub")).toBeInTheDocument();
+});

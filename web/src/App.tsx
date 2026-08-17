@@ -13,6 +13,7 @@ import { useTargetInventory } from "./hooks/useTargetInventory";
 import type { AuthSession, Repository, RepositorySelection } from "./types";
 import { DisplaySettingsProvider } from "./display-settings";
 import { AuthGate } from "./auth";
+import { browserTitle, siteName } from "./site-config";
 
 function currentSearch() {
   return window.location.search;
@@ -44,6 +45,10 @@ function AppContent({ session, signOut }: { session: AuthSession; signOut: () =>
   const selection = selectionFrom(query);
   const page: AppPage = query.get("view") === "connections" ? "connections" : query.get("view") === "targets" ? "targets" : "ledger";
   const targetInventory = useTargetInventory(page !== "connections");
+
+  useEffect(() => {
+    document.title = browserTitle(siteName, t("navigation.deploymentLedger"));
+  }, [t]);
   const openNotificationEvent = useCallback((eventID: string) => {
     const next = new URLSearchParams(window.location.search);
     next.delete("view");
