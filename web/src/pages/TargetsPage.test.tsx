@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { i18n } from "../i18n";
 import { zhCN } from "../locales/zh-CN";
 import { TargetsPage } from "./TargetsPage";
@@ -40,6 +40,13 @@ it("shows the last deployment and a compact running-container count", () => {
   expect(runtimeRow?.closest("tbody")).toHaveClass("data-surface");
   expect(runtimeRow).toHaveClass("flex", "items-center");
   expect(runtimeRow).toHaveTextContent("1 / 2Container details");
+  const details = screen.getByText("Container details").closest("details");
+  expect(details).not.toHaveAttribute("open");
+  fireEvent.click(screen.getByText("Container details"));
+  expect(details).toHaveAttribute("open");
+  const containerList = screen.getByRole("list", { name: "Container details" });
+  expect(within(containerList).getAllByRole("listitem")).toHaveLength(2);
+  expect(within(containerList).getByText("api-1").closest("li")).toHaveTextContent("api-1running · Health: healthy · Restarts: 0");
   fireEvent.click(screen.getByRole("button", { name: "Refresh targets" }));
   expect(refresh).toHaveBeenCalledOnce();
 });

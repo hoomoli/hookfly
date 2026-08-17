@@ -77,6 +77,7 @@ func TestListNotificationsEmitsIdentifiedPushFactsWithoutRouting(t *testing.T) {
 	s := openTestStore(t)
 	identified := canonicalCommand("github", "github-a", "app", "identified-push")
 	identified.CanonicalEvent.Event = "push"
+	identified.CanonicalEvent.CommitMessage = "feat: publish assets"
 	identified.RoutingResult = domain.RoutingUnmatched
 	if _, err := s.Ingest(context.Background(), identified); err != nil {
 		t.Fatal(err)
@@ -97,6 +98,27 @@ func TestListNotificationsEmitsIdentifiedPushFactsWithoutRouting(t *testing.T) {
 	}
 	if page.Items[0].Provider != "github" || page.Items[0].SourceID != "github-a" || page.Items[0].Repository != "app" {
 		t.Fatalf("push identity = %#v", page.Items[0])
+	}
+	if page.Items[0].Summary != "feat: publish assets" {
+		t.Fatalf("push summary = %q", page.Items[0].Summary)
+	}
+}
+
+func TestListNotificationsUsesPipelineCommitMessageAsSummary(t *testing.T) {
+	s := openTestStore(t)
+	command := canonicalCommand("gitlab", "gitlab-a", "client-dist", "pipeline-with-commit")
+	command.CanonicalEvent.Status = "failure"
+	command.CanonicalEvent.CommitMessage = "deploy(web-mobile): sync build to 1135"
+	if _, err := s.Ingest(context.Background(), command); err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := s.ListNotifications(context.Background(), NotificationQuery{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].Summary != "deploy(web-mobile): sync build to 1135" {
+		t.Fatalf("pipeline facts = %#v", page.Items)
 	}
 }
 

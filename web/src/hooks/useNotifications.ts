@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listNotifications } from "../api";
+import { i18n } from "../i18n";
 import { appendFacts, clearNotificationHistory, defaultNotificationState, markAllRead, markRead, NOTIFICATION_STORAGE_KEY, notificationFactEnabled, parseNotificationState, resetRepositoryPreferences, setNotificationStatus } from "../notifications";
-import type { NotificationStatusKey, Repository, StoredNotificationState } from "../types";
+import type { NotificationFact, NotificationStatusKey, Repository, StoredNotificationState } from "../types";
 
 export type SystemNotificationState = "unavailable" | NotificationPermission;
 
@@ -27,7 +28,15 @@ function permissionState(): SystemNotificationState {
   return typeof Notification === "undefined" || !window.isSecureContext ? "unavailable" : Notification.permission;
 }
 
-export function useNotifications(onOpenEvent: (eventID: string) => void, pollInterval = 5_000): NotificationController {
+function systemNotificationTitle(fact: NotificationFact, repositories: readonly Repository[]): string {
+  const configured = repositories.find((repository) => repository.provider === fact.provider && repository.source_id === fact.source_id && repository.id === fact.repository);
+  const repositoryName = (configured?.name || fact.repository).replace(/^#+/, "");
+  const category = i18n.t(`notifications.categories.${fact.category}`);
+  if (fact.category === "push") return `#${repositoryName} · ${category}`;
+  return `#${repositoryName} · ${category} · ${i18n.t(`notifications.outcomes.${fact.outcome}`)}`;
+}
+
+export function useNotifications(onOpenEvent: (eventID: string) => void, pollInterval = 5_000, repositories: readonly Repository[] = []): NotificationController {
   const [state, setState] = useState(readInitialState);
   const [error, setError] = useState<Error | null>(null);
   const [systemState, setSystemState] = useState<SystemNotificationState>(permissionState);
@@ -35,8 +44,10 @@ export function useNotifications(onOpenEvent: (eventID: string) => void, pollInt
   const stateRef = useRef(state);
   const pollRevisionRef = useRef(0);
   const openRef = useRef(onOpenEvent);
+  const repositoriesRef = useRef(repositories);
   stateRef.current = state;
   openRef.current = onOpenEvent;
+  repositoriesRef.current = repositories;
 
   const update = useCallback((change: (current: StoredNotificationState) => StoredNotificationState) => {
     const next = change(stateRef.current);
@@ -85,7 +96,7 @@ export function useNotifications(onOpenEvent: (eventID: string) => void, pollInt
           if (responseState.system_enabled && permissionState() === "granted") {
             for (const fact of accepted) {
               try {
-                const notification = new Notification(`${fact.target_id || fact.repository} · ${fact.outcome}`, { body: fact.summary, tag: fact.id });
+                const notification = new Notification(systemNotificationTitle(fact, repositoriesRef.current), { body: fact.summary, tag: fact.id });
                 notification.onclick = () => { window.focus(); openRef.current(fact.event_id); notification.close?.(); };
               } catch { /* in-app notifications remain available */ }
             }
@@ -121,7 +132,7 @@ export function useNotifications(onOpenEvent: (eventID: string) => void, pollInt
     const permission = permissionState();
     setSystemState(permission);
     if (permission !== "granted" || !stateRef.current.system_enabled) return;
-    try { new Notification(title, { body, tag: "hookfly-notification-test" }); } catch { /* the visible guidance remains available */ }
+    try { new Notification(title, { body }); } catch { /* the visible guidance remains available */ }
   }, []);
 
   return {

@@ -185,10 +185,10 @@ test("aligns command actions and persists manual themes", async ({ page }) => {
   await page.goto("/");
 
   const reload = await page.getByRole("button", { name: "Reload configuration" }).boundingBox();
-  const sync = await page.locator('[data-slot="sync-status"]').boundingBox();
+  const theme = await page.getByRole("button", { name: "Choose theme" }).boundingBox();
   expect(reload).not.toBeNull();
-  expect(sync).not.toBeNull();
-  expect(Math.abs((reload!.y + reload!.height / 2) - (sync!.y + sync!.height / 2))).toBeLessThanOrEqual(1);
+  expect(theme).not.toBeNull();
+  expect(Math.abs((reload!.y + reload!.height / 2) - (theme!.y + theme!.height / 2))).toBeLessThanOrEqual(1);
 
   await page.getByRole("button", { name: "Choose theme" }).click();
   await page.getByRole("menuitemradio", { name: "Dark" }).click();
@@ -210,7 +210,6 @@ test("keeps every global action in one command row without an empty row above", 
     page.getByRole("button", { name: "选择主题" }),
     page.getByRole("button", { name: "选择语言" }),
     page.getByRole("button", { name: "重新加载配置" }),
-    page.locator('[data-slot="sync-status"]'),
   ];
   const main = await page.locator("main").boundingBox();
   const commandBarBox = await commandBar.boundingBox();

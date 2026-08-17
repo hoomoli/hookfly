@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultNotificationState, NOTIFICATION_STORAGE_KEY } from "../notifications";
+import { i18n } from "../i18n";
 import type { NotificationFact, Repository } from "../types";
 import { useNotifications } from "./useNotifications";
 import type { NotificationFeed } from "../types";
@@ -67,7 +68,42 @@ describe("useNotifications", () => {
     FakeNotification.permission = "granted";
     expect(requestPermission).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(created).toHaveLength(1));
-    expect(created[0]).toEqual({ title: "target-system · success", options: { body: "Deployment succeeded", tag: "system" } });
+    expect(created[0]).toEqual({ title: "#app · Deployment · Success", options: { body: "Deployment succeeded", tag: "system" } });
+  });
+
+  it("uses the configured repository name, current language, status, and commit message", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const created: Array<{ title: string; options?: NotificationOptions }> = [];
+    class FakeNotification {
+      static permission: NotificationPermission = "granted";
+      static requestPermission = vi.fn();
+      onclick: (() => void) | null = null;
+      constructor(title: string, options?: NotificationOptions) { created.push({ title, options }); }
+    }
+    vi.stubGlobal("Notification", FakeNotification);
+    Object.defineProperty(window, "isSecureContext", { configurable: true, value: true });
+    const stored = defaultNotificationState();
+    localStorage.setItem(NOTIFICATION_STORAGE_KEY, JSON.stringify({
+      ...stored,
+      initialized: true,
+      system_enabled: true,
+      preferences: { ...stored.preferences, "push.received": true },
+    }));
+    const facts: NotificationFact[] = [
+      { id: "push", cursor: "push", category: "push", outcome: "received", event_id: "event-push", provider: "gitlab", source_id: "gitlab-a", repository: "client-dist", summary: "feat: publish assets", occurred_at: "2026-08-12T00:00:00Z" },
+      { id: "success", cursor: "success", category: "pipeline", outcome: "success", event_id: "event-success", provider: "gitlab", source_id: "gitlab-a", repository: "client-dist", summary: "fix: verify release", occurred_at: "2026-08-12T00:01:00Z" },
+      { id: "failure", cursor: "failure", category: "pipeline", outcome: "failure", event_id: "event-failure", provider: "gitlab", source_id: "gitlab-a", repository: "client-dist", summary: "deploy(web-mobile): sync build to 1135", occurred_at: "2026-08-12T00:02:00Z" },
+    ];
+    feeds.push({ latest_cursor: "failure", items: facts });
+    const repositories: Repository[] = [{ provider: "gitlab", source_id: "gitlab-a", id: "client-dist", name: "gop-client-dist" }];
+
+    renderHook(() => useNotifications(() => undefined, 60_000, repositories));
+
+    await waitFor(() => expect(created).toEqual([
+      { title: "#gop-client-dist · Push", options: { body: "feat: publish assets", tag: "push" } },
+      { title: "#gop-client-dist · \u6d41\u6c34\u7ebf · \u6210\u529f", options: { body: "fix: verify release", tag: "success" } },
+      { title: "#gop-client-dist · \u6d41\u6c34\u7ebf · \u5931\u8d25", options: { body: "deploy(web-mobile): sync build to 1135", tag: "failure" } },
+    ]));
   });
 
   it("refreshes browser notification permission when the page becomes visible", async () => {
@@ -106,7 +142,7 @@ describe("useNotifications", () => {
     expect(result.current.systemState).toBe("granted");
   });
 
-  it("sends a test notification only when browser permission and Hookfly are enabled", () => {
+  it("creates independent notifications for repeated tests", () => {
     const created: Array<{ title: string; options?: NotificationOptions }> = [];
     class FakeNotification {
       static permission: NotificationPermission = "granted";
@@ -120,9 +156,15 @@ describe("useNotifications", () => {
     deferredFeeds.push(new Promise(() => undefined));
     const { result } = renderHook(() => useNotifications(() => undefined, 60_000));
 
-    act(() => { result.current.sendTestSystemNotification("Hookfly test", "Notifications can reach this device."); });
+    act(() => {
+      result.current.sendTestSystemNotification("Hookfly test", "Notifications can reach this device.");
+      result.current.sendTestSystemNotification("Hookfly test", "Notifications can reach this device.");
+    });
 
-    expect(created).toEqual([{ title: "Hookfly test", options: { body: "Notifications can reach this device.", tag: "hookfly-notification-test" } }]);
+    expect(created).toEqual([
+      { title: "Hookfly test", options: { body: "Notifications can reach this device." } },
+      { title: "Hookfly test", options: { body: "Notifications can reach this device." } },
+    ]);
   });
 
   it("uses a repository override for both unread facts and system notifications", async () => {
@@ -148,7 +190,7 @@ describe("useNotifications", () => {
 
     await waitFor(() => expect(result.current.state.items.map((item) => item.id)).toEqual(["app-push"]));
     expect(result.current.unreadCount).toBe(1);
-    await waitFor(() => expect(created).toEqual([{ title: "target-app-push · received", options: { body: "app received a push", tag: "app-push" } }]));
+    await waitFor(() => expect(created).toEqual([{ title: "#app · Push", options: { body: "app received a push", tag: "app-push" } }]));
   });
 
   it("uses response-time repository preferences for both in-app and system notifications", async () => {
@@ -221,7 +263,7 @@ describe("useNotifications", () => {
     await waitFor(() => expect(result.current.state.items.map((item) => item.id)).toEqual(["fresh"]));
     expect(result.current.state.cursor).toBe("fresh-cursor");
     expect(result.current.unreadCount).toBe(1);
-    expect(created).toEqual([{ title: "target-fresh · success", options: { body: "Deployment succeeded", tag: "fresh" } }]);
+    expect(created).toEqual([{ title: "#app · Deployment · Success", options: { body: "Deployment succeeded", tag: "fresh" } }]);
   });
 
   it("does not repeat a system notification for a fact already retained", async () => {

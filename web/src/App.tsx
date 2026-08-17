@@ -5,7 +5,6 @@ import { AppNavigation, type AppPage } from "./components/AppNavigation";
 import { AppShell } from "./components/AppShell";
 import { NotificationCenter } from "./components/NotificationCenter";
 import { SettingsCenter } from "./components/SettingsCenter";
-import { SystemNotificationPrompt } from "./components/SystemNotificationPrompt";
 import { useNotifications } from "./hooks/useNotifications";
 import { ConnectionsPage } from "./pages/ConnectionsPage";
 import { LedgerPage } from "./pages/LedgerPage";
@@ -53,7 +52,7 @@ function AppContent({ session, signOut }: { session: AuthSession; signOut: () =>
     window.history.replaceState(null, "", `${window.location.pathname}${nextSearch}`);
     setSearch(nextSearch);
   }, []);
-  const notifications = useNotifications(openNotificationEvent);
+  const notifications = useNotifications(openNotificationEvent, 5_000, repositories);
   const onHistoryCleared = useCallback(() => {
     const next = new URLSearchParams(window.location.search);
     next.delete("id");
@@ -139,7 +138,6 @@ function AppContent({ session, signOut }: { session: AuthSession; signOut: () =>
         onSignOut={signOut}
       />
     )}>
-      <SystemNotificationPrompt controller={notifications} />
       {page === "connections" ? <ConnectionsPage globalActions={globalActions} /> : page === "targets" ? <TargetsPage inventory={targetInventory} globalActions={globalActions} /> : (
         <LedgerPage
           globalActions={globalActions}

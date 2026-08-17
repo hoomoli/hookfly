@@ -184,7 +184,7 @@ describe("App", () => {
     renderApp();
 
     expect(await screen.findByRole("heading", { name: "Deployment activity ledger" })).toBeInTheDocument();
-    expect(screen.getByText("System notifications are unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("System notifications are unavailable")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Account menu for De Jong" })).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "Reload configuration" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Choose language" })).toBeInTheDocument();
