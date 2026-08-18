@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { ApiError, getAuthSession, logout } from "./api";
+import { AUTHENTICATION_REQUIRED_EVENT, ApiError, getAuthSession, logout } from "./api";
 import { EmptyState } from "./components/EmptyState";
 import { Button } from "./components/ui/button";
 import type { AuthSession } from "./types";
@@ -36,10 +36,6 @@ export function AuthGate({ children, navigate = defaultNavigate }: AuthGateProps
     void getAuthSession().then(
       (session) => setState({ status: "authenticated", session }),
       (reason: unknown) => {
-        if (reason instanceof ApiError && reason.status === 401) {
-          navigate(loginURL());
-          return;
-        }
         if (reason instanceof ApiError && reason.status === 403) {
           setState({ status: "denied" });
           return;
@@ -47,9 +43,14 @@ export function AuthGate({ children, navigate = defaultNavigate }: AuthGateProps
         setState({ status: "unavailable" });
       },
     );
-  }, [navigate]);
+  }, []);
 
-  useEffect(resolveSession, [resolveSession]);
+  useEffect(() => {
+    const handleAuthenticationRequired = () => navigate(loginURL());
+    window.addEventListener(AUTHENTICATION_REQUIRED_EVENT, handleAuthenticationRequired);
+    resolveSession();
+    return () => window.removeEventListener(AUTHENTICATION_REQUIRED_EVENT, handleAuthenticationRequired);
+  }, [navigate, resolveSession]);
 
   const signOut = useCallback(async () => {
     try {

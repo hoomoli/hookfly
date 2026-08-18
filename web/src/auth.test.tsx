@@ -1,5 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { listTargets } from "./api";
 import { AuthGate } from "./auth";
 
 const session = {
@@ -33,6 +34,25 @@ it("sends anonymous users to login with the current local return path", async ()
 
   await waitFor(() => expect(destination).toBe("/api/v1/auth/login?return_to=%2F%3Fview%3Dtargets"));
   expect(screen.queryByText("Protected management UI")).not.toBeInTheDocument();
+});
+
+it("sends authenticated users to login when a business request returns unauthorized", async () => {
+  // Break caught: an expired session leaves the protected UI mounted with API error messages.
+  window.history.replaceState(null, "", "/?view=targets");
+  let destination = "";
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    if (String(input).endsWith("/auth/session")) return new Response(JSON.stringify(session), { status: 200 });
+    return new Response(JSON.stringify({ error: { code: "unauthorized", message: "authentication required" } }), { status: 401 });
+  }));
+
+  render(
+    <AuthGate navigate={(url) => { destination = url; }}>
+      {() => <button onClick={() => { void listTargets().catch(() => undefined); }}>Refresh targets</button>}
+    </AuthGate>,
+  );
+
+  await userEvent.click(await screen.findByRole("button", { name: "Refresh targets" }));
+  await waitFor(() => expect(destination).toBe("/api/v1/auth/login?return_to=%2F%3Fview%3Dtargets"));
 });
 
 it("renders access denied without mounting protected children", async () => {
@@ -70,6 +90,26 @@ it("keeps the signed-out view after local logout until sign in is explicit", asy
 
   expect(await screen.findByText("Signed out")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
+});
+
+it("sends authenticated users to login when logout returns unauthorized", async () => {
+  window.history.replaceState(null, "", "/?view=connections");
+  let destination = "";
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    if (String(input).endsWith("/logout")) {
+      return new Response(JSON.stringify({ error: { code: "unauthorized", message: "authentication required" } }), { status: 401 });
+    }
+    return new Response(JSON.stringify(session), { status: 200 });
+  }));
+
+  render(
+    <AuthGate navigate={(url) => { destination = url; }}>
+      {(_session, signOut) => <button onClick={() => void signOut()}>Account sign out</button>}
+    </AuthGate>,
+  );
+
+  await userEvent.click(await screen.findByRole("button", { name: "Account sign out" }));
+  await waitFor(() => expect(destination).toBe("/api/v1/auth/login?return_to=%2F%3Fview%3Dconnections"));
 });
 
 it("shows a retryable error when logout fails", async () => {

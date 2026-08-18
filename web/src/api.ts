@@ -16,6 +16,8 @@ import type {
 } from "./types";
 import { i18n } from "./i18n";
 
+export const AUTHENTICATION_REQUIRED_EVENT = "hookfly:authentication-required";
+
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -28,6 +30,7 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init);
+  if (response.status === 401) window.dispatchEvent(new Event(AUTHENTICATION_REQUIRED_EVENT));
   const body = await response.json() as T | ApiErrorBody;
   if (!response.ok) {
     const error = body as ApiErrorBody;
@@ -43,6 +46,7 @@ export function getAuthSession(): Promise<AuthSession> {
 export async function logout(): Promise<void> {
   const response = await fetch("/api/v1/auth/logout", { method: "POST" });
   if (!response.ok) {
+    if (response.status === 401) window.dispatchEvent(new Event(AUTHENTICATION_REQUIRED_EVENT));
     let error: ApiErrorBody | undefined;
     try {
       error = await response.json() as ApiErrorBody;
