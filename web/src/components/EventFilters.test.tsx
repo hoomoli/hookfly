@@ -5,7 +5,10 @@ it("offers repository, target, delivery, and deployment filters without exact re
   const onChange = vi.fn();
   render(<EventFilters
     filters={{ repository: "", target: "", transport: "", deployment: "" }}
-    repositories={[{ provider: "gitlab", source_id: "gitlab-a", id: "app", name: "Application" }]}
+    repositories={[
+      { provider: "gitlab", source_id: "gitlab-a", id: "app", name: "Application" },
+      { provider: "harbor", source_id: "harbor-a", id: "application-image", name: "Application Image" },
+    ]}
     targets={[{ id: "production", connection_id: "primary", resource_type: "compose", resource_id: "compose-1", condition: "available", containers: [] }]}
     onChange={onChange}
     onClear={vi.fn()}
@@ -16,6 +19,9 @@ it("offers repository, target, delivery, and deployment filters without exact re
   fireEvent.click(screen.getByLabelText("Repository"));
   fireEvent.click(screen.getByRole("option", { name: /Application.*GitLab/i }));
   expect(onChange).toHaveBeenCalledWith("repository", "gitlab-a\u0000app");
+  fireEvent.click(screen.getByLabelText("Repository"));
+  fireEvent.click(screen.getByRole("option", { name: /Application Image.*Harbor/i }));
+  expect(onChange).toHaveBeenCalledWith("repository", "harbor-a\u0000application-image");
   fireEvent.click(screen.getByLabelText("Target"));
   fireEvent.click(screen.getByRole("option", { name: "production" }));
   expect(onChange).toHaveBeenCalledWith("target", "production");

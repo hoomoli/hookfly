@@ -176,6 +176,15 @@ describe("notification state", () => {
     expect(next.items.map((item) => item.id)).toEqual(["enabled"]);
   });
 
+  it("applies repository preferences to Harbor artifact notifications", () => {
+    const harbor = { provider: "harbor" as const, source_id: "harbor-a", repository: "application-image" };
+    const state = setNotificationStatus(defaultNotificationState(), "push.received", true, harbor);
+    const artifact = { ...fact("artifact", "push", "received"), ...harbor };
+
+    expect(appendFacts(state, [artifact]).items.map((item) => item.id)).toEqual(["artifact"]);
+    expect(repositoryPreferenceKey(harbor)).toBe('["harbor","harbor-a","application-image"]');
+  });
+
   it("uses global preferences for facts with an incomplete repository identity", () => {
     const globallyEnabled = setNotificationStatus(defaultNotificationState(), "pipeline.running", true);
     const malformedOverride = {

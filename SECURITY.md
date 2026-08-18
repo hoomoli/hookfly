@@ -18,4 +18,4 @@ Keep backend management port `8081` private to the application network. Route `/
 
 Keep the Authentik client secret and Hookfly session secret in protected runtime configuration. They must be independent. Rotating the session secret invalidates every current Hookfly session; rotating the Authentik client secret requires updating both systems before new logins work. Removing a user from an allowed group takes effect when the existing fixed eight-hour Hookfly session expires, unless the session secret is rotated earlier.
 
-Rotate any exposed Authentik client secret, Hookfly session secret, GitLab token, GitHub webhook secret, or Dokploy API key and review stored event history after a suspected compromise. Hookfly logout clears only its local cookie and does not terminate the user's Authentik SSO session.
+Rotate any exposed Authentik client secret, Hookfly session secret, GitLab token, GitHub webhook secret, Harbor authorization value, or Dokploy API key and review stored event history after a suspected compromise. Hookfly logout clears only its local cookie and does not terminate the user's Authentik SSO session.

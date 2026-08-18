@@ -2,7 +2,10 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import type { EventSummary, Repository } from "../types";
 import { EventTable } from "./EventTable";
 
-const repositories: Repository[] = [{ provider: "gitlab", source_id: "gitlab-a", id: "app", name: "Application" }];
+const repositories: Repository[] = [
+  { provider: "gitlab", source_id: "gitlab-a", id: "app", name: "Application" },
+  { provider: "harbor", source_id: "harbor-a", id: "application-image", name: "Application Image" },
+];
 
 function event(overrides: Partial<EventSummary> = {}): EventSummary {
   return {
@@ -34,9 +37,9 @@ it("keeps each target beside its execution status without a separate status colu
   expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual([
     "Received",
     "Repository",
-    "Branch",
-    "Short SHA",
-    "Commit",
+    "Reference",
+    "Revision",
+    "Message",
     "Event",
     "Route target",
   ]);
@@ -65,6 +68,26 @@ it("keeps each target beside its execution status without a separate status colu
   expect(deliveryLine).not.toHaveClass("rounded-lg", "border", "bg-muted/20", "px-2.5", "py-2");
   expect(deliveryLine).toHaveClass("[&_[data-slot=badge]]:px-1.5");
   expect(screen.getByText("production")).toHaveClass("text-muted-foreground");
+});
+
+it("shows Harbor artifact identity without Git commit terminology", () => {
+  render(<EventTable repositories={repositories} events={[event({
+    provider: "harbor",
+    source_id: "harbor-a",
+    repository: "application-image",
+    event_type: "artifact_push",
+    ref: "latest",
+    revision: "sha256:0123456789abcdef",
+    commit_message: null,
+    status: null,
+  })]} selectedID={null} onSelect={vi.fn()} onOperation={vi.fn()} />);
+
+  expect(screen.getByText("Application Image")).toBeInTheDocument();
+  expect(screen.getByText("Harbor")).toBeInTheDocument();
+  expect(screen.getByText("Artifact push")).toBeInTheDocument();
+  expect(screen.getByText("latest")).toBeInTheDocument();
+  expect(screen.getByText("sha256:01234")).toBeInTheDocument();
+  expect(screen.queryByText("No commit message")).toBeNull();
 });
 
 it("keeps row selection and exposes a retry icon only for an eligible failure", () => {

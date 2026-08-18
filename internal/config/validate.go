@@ -15,6 +15,7 @@ import (
 
 var identifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 var httpTemplatePattern = regexp.MustCompile(`\{\{\s*([^{}\s]+)\s*\}\}`)
+var harborRepositoryPattern = regexp.MustCompile(`^[^/\s]+(?:/[^/\s]+)+$`)
 
 var allowedHTTPTemplateVariables = map[string]struct{}{
 	"event.source": {}, "event.repository": {}, "event.ref": {}, "event.revision": {},
@@ -50,8 +51,8 @@ func ValidateAndCanonicalize(bundle *Bundle) error {
 }
 
 func validateSources(bundle *Bundle) (map[string]map[string]struct{}, error) {
-	locations := make(map[string]SourceLocation, len(bundle.GitLabSources)+len(bundle.GitHubSources))
-	repositories := make(map[string]map[string]struct{}, len(bundle.GitLabSources)+len(bundle.GitHubSources))
+	locations := make(map[string]SourceLocation, len(bundle.GitLabSources)+len(bundle.GitHubSources)+len(bundle.HarborSources))
+	repositories := make(map[string]map[string]struct{}, len(bundle.GitLabSources)+len(bundle.GitHubSources)+len(bundle.HarborSources))
 	gitLabTokens := make(map[[sha256.Size]byte]SourceLocation, len(bundle.GitLabSources))
 	for index := range bundle.GitLabSources {
 		source := &bundle.GitLabSources[index]
@@ -63,7 +64,7 @@ func validateSources(bundle *Bundle) (map[string]map[string]struct{}, error) {
 			return nil, fmt.Errorf("duplicate GitLab source token at %s and %s", previous.String(), source.Location.String())
 		}
 		gitLabTokens[tokenHash] = source.Location
-		if err := validateSource(source.ID, source.Location, source.Repositories, locations, repositories); err != nil {
+		if err := validateSource(source.ID, source.Location, source.Repositories, locations, repositories, validatePositiveExternalID); err != nil {
 			return nil, err
 		}
 	}
@@ -72,14 +73,23 @@ func validateSources(bundle *Bundle) (map[string]map[string]struct{}, error) {
 		if source.Secret == "" {
 			return nil, fmt.Errorf("GitHub source %q requires secret", source.ID)
 		}
-		if err := validateSource(source.ID, source.Location, source.Repositories, locations, repositories); err != nil {
+		if err := validateSource(source.ID, source.Location, source.Repositories, locations, repositories, validatePositiveExternalID); err != nil {
+			return nil, err
+		}
+	}
+	for index := range bundle.HarborSources {
+		source := &bundle.HarborSources[index]
+		if source.Authorization == "" {
+			return nil, fmt.Errorf("Harbor source %q requires authorization", source.ID)
+		}
+		if err := validateSource(source.ID, source.Location, source.Repositories, locations, repositories, validateHarborRepository); err != nil {
 			return nil, err
 		}
 	}
 	return repositories, nil
 }
 
-func validateSource(id string, location SourceLocation, configured []Repository, locations map[string]SourceLocation, repositories map[string]map[string]struct{}) error {
+func validateSource(id string, location SourceLocation, configured []Repository, locations map[string]SourceLocation, repositories map[string]map[string]struct{}, validateExternalID func(string) error) error {
 	if err := validateIdentifier("source", id); err != nil {
 		return err
 	}
@@ -94,7 +104,7 @@ func validateSource(id string, location SourceLocation, configured []Repository,
 		if err := validateIdentifier("repository", repository.ID); err != nil {
 			return err
 		}
-		if err := validatePositiveExternalID(repository.ExternalID); err != nil {
+		if err := validateExternalID(repository.ExternalID); err != nil {
 			return fmt.Errorf("repository %q %w", repository.ID, err)
 		}
 		if err := addUniqueLocation(externalIDs, "repository external", repository.ExternalID, repository.Location); err != nil {
@@ -303,6 +313,13 @@ func validatePositiveExternalID(id string) error {
 	value, err := strconv.ParseInt(id, 10, 64)
 	if err != nil || value <= 0 {
 		return fmt.Errorf("external ID must be positive")
+	}
+	return nil
+}
+
+func validateHarborRepository(repository string) error {
+	if !harborRepositoryPattern.MatchString(repository) {
+		return fmt.Errorf("Harbor repository must be a namespace/name path")
 	}
 	return nil
 }
@@ -518,6 +535,7 @@ func scalarDomainsOverlap(left, right *string) bool {
 func canonicalize(bundle *Bundle) {
 	sort.Slice(bundle.GitLabSources, func(left, right int) bool { return bundle.GitLabSources[left].ID < bundle.GitLabSources[right].ID })
 	sort.Slice(bundle.GitHubSources, func(left, right int) bool { return bundle.GitHubSources[left].ID < bundle.GitHubSources[right].ID })
+	sort.Slice(bundle.HarborSources, func(left, right int) bool { return bundle.HarborSources[left].ID < bundle.HarborSources[right].ID })
 	for index := range bundle.GitLabSources {
 		sort.Slice(bundle.GitLabSources[index].Repositories, func(left, right int) bool {
 			return bundle.GitLabSources[index].Repositories[left].ID < bundle.GitLabSources[index].Repositories[right].ID
@@ -526,6 +544,11 @@ func canonicalize(bundle *Bundle) {
 	for index := range bundle.GitHubSources {
 		sort.Slice(bundle.GitHubSources[index].Repositories, func(left, right int) bool {
 			return bundle.GitHubSources[index].Repositories[left].ID < bundle.GitHubSources[index].Repositories[right].ID
+		})
+	}
+	for index := range bundle.HarborSources {
+		sort.Slice(bundle.HarborSources[index].Repositories, func(left, right int) bool {
+			return bundle.HarborSources[index].Repositories[left].ID < bundle.HarborSources[index].Repositories[right].ID
 		})
 	}
 	sort.Slice(bundle.DokployConnections, func(left, right int) bool {
@@ -549,4 +572,5 @@ var canonicalEvents = map[string]bool{
 	"push":          true,
 	"tag_push":      true,
 	"merge_request": true,
+	"artifact_push": true,
 }

@@ -24,3 +24,14 @@ routes:
       type: deploy
       targets:
         - production
+  - id: deploy-harbor-latest
+    priority: 300
+    match:
+      source: harbor-example
+      repository: application-image
+      event: artifact_push
+      ref: latest
+    action:
+      type: deploy
+      targets:
+        - production

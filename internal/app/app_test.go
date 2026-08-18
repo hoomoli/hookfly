@@ -41,7 +41,10 @@ func TestPublicMuxExposesOnlyHook(t *testing.T) {
 	githubHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux := NewPublicMux(gitlabHandler, githubHandler)
+	harborHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	})
+	mux := NewPublicMux(gitlabHandler, githubHandler, harborHandler)
 	for _, path := range []string{"/api/v1/repositories", "/api/v1/connections", "/api/v1/connections/primary/resources", "/api/v1/events", "/api/v1/events/event-1", "/api/v1/deliveries/delivery-1/attempts", "/api/v1/health", "/api/v1/auth/login", "/api/v1/auth/callback", "/api/v1/auth/session", "/api/v1/auth/logout", "/"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rr := httptest.NewRecorder()
@@ -60,6 +63,11 @@ func TestPublicMuxExposesOnlyHook(t *testing.T) {
 	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/hooks/github/github-primary", nil))
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("POST /hooks/github/github-primary returned %d", rr.Code)
+	}
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/hooks/harbor/harbor-primary", nil))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("POST /hooks/harbor/harbor-primary returned %d", rr.Code)
 	}
 	rr = httptest.NewRecorder()
 	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/hooks/gitlab", nil))

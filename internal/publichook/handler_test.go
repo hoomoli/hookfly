@@ -774,17 +774,19 @@ func (i *recordingIngester) deferredCommands() []domain.IngestCommand {
 
 func webhookManager(t *testing.T) *runtimecfg.Manager {
 	t.Helper()
-	priorityOne, priorityTwo, priorityThree := 1, 2, 3
+	priorityOne, priorityTwo, priorityThree, priorityFour := 1, 2, 3, 4
 	bundle := &config.Bundle{
 		Global:             config.Global{Kind: "Hookfly"},
 		GitLabSources:      []config.GitLabSource{{ID: "gitlab-primary", Token: "gitlab-token", Repositories: []config.Repository{{ID: "application", Name: "Application", ExternalID: "7"}}}},
 		GitHubSources:      []config.GitHubSource{{ID: "github-primary", Secret: "github-secret", Repositories: []config.Repository{{ID: "application", Name: "Application", ExternalID: "101"}}}},
+		HarborSources:      []config.HarborSource{{ID: "harbor-primary", Authorization: "Bearer harbor-secret", Repositories: []config.Repository{{ID: "application-image", Name: "Application Image", ExternalID: "team/application"}}}},
 		DokployConnections: []config.DokployConnection{{ID: "primary", BaseURL: "https://dokploy.example.invalid", APIKey: "dokploy-key"}},
 		Targets:            []config.Target{{ID: "production", Type: "dokploy", Connection: "primary", ResourceType: "compose", ResourceID: "compose-production"}},
 		Routes: []config.Route{
 			{ID: "deploy-gitlab", Priority: &priorityOne, Match: config.RouteMatch{Source: "gitlab-primary", Repository: "application", Event: "pipeline"}, Action: config.Action{Type: "deploy", Targets: []string{"production"}}},
 			{ID: "deploy-github", Priority: &priorityTwo, Match: config.RouteMatch{Source: "github-primary", Repository: "application", Event: "pipeline"}, Action: config.Action{Type: "deploy", Targets: []string{"production"}}},
 			{ID: "deploy-github-tag", Priority: &priorityThree, Match: config.RouteMatch{Source: "github-primary", Repository: "application", Event: "tag_push"}, Action: config.Action{Type: "deploy", Targets: []string{"production"}}},
+			{ID: "deploy-harbor", Priority: &priorityFour, Match: config.RouteMatch{Source: "harbor-primary", Repository: "application-image", Event: "artifact_push"}, Action: config.Action{Type: "deploy", Targets: []string{"production"}}},
 		},
 	}
 	generation, err := runtimecfg.Compile(bundle, nil)

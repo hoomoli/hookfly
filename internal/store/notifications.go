@@ -131,9 +131,9 @@ const notificationFactsUnionSQL = `
 
     SELECT '0:push:' || e.id AS id, 'push' AS category, 'received' AS outcome,
            e.id AS event_id, NULL AS delivery_id, NULL AS target_id, e.provider, e.source_id, e.repository_id AS repository,
-           COALESCE(NULLIF(TRIM(e.commit_message), ''), 'Push received') AS summary, e.received_at AS occurred_at
+           COALESCE(NULLIF(TRIM(e.commit_message), ''), CASE WHEN e.event = 'artifact_push' THEN 'Artifact push received' ELSE 'Push received' END) AS summary, e.received_at AS occurred_at
     FROM events e
-    WHERE e.event = 'push' AND e.repository_id <> ''
+    WHERE e.event IN ('push', 'artifact_push') AND e.repository_id <> ''
 
     UNION ALL
 

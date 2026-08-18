@@ -196,6 +196,13 @@ type GitHubSource struct {
 	Location     SourceLocation `yaml:"-"`
 }
 
+type HarborSource struct {
+	ID            string         `yaml:"id"`
+	Authorization string         `yaml:"authorization" secret:"true"`
+	Repositories  []Repository   `yaml:"repositories"`
+	Location      SourceLocation `yaml:"-"`
+}
+
 // Repository is a provider-independent repository reference after decoding.
 type Repository struct {
 	ID           string
@@ -218,6 +225,7 @@ type Bundle struct {
 	Global             Global
 	GitLabSources      []GitLabSource
 	GitHubSources      []GitHubSource
+	HarborSources      []HarborSource
 	DokployConnections []DokployConnection
 	HTTPConnections    []HTTPConnection
 	Targets            []Target

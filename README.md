@@ -1,14 +1,14 @@
 # Hookfly
 
-Hookfly receives GitLab and GitHub webhooks, records their routing history in SQLite, and asks Dokploy to deploy configured Compose resources. The Go backend exposes separate public and management listeners; the React 19 UI talks to the management API through a same-origin Nginx proxy.
+Hookfly receives GitLab, GitHub, and Harbor webhooks, records their routing history in SQLite, and asks Dokploy to deploy configured Compose resources. The Go backend exposes separate public and management listeners; the React 19 UI talks to the management API through a same-origin Nginx proxy.
 
 ## Configure Hookfly
 
-`configs/hookfly.yaml` is an executable starter with no runtime resources. It is valid when `conf.d` is absent or empty. `configs/routing.example/` is the complete fake reference: GitLab and GitHub sources, a Dokploy Compose target, an HTTP management target, and two deploy routes.
+`configs/hookfly.yaml` is an executable starter with no runtime resources. It is valid when `conf.d` is absent or empty. `configs/routing.example/` is the complete fake reference: GitLab, GitHub, and Harbor sources, a Dokploy Compose target, an HTTP management target, and three deploy routes.
 
 The global file is always `hookfly.yaml`. Resource documents live only in direct, regular `conf.d/*.yaml` files. They merge as one configuration set: filenames have no precedence or ordering semantics. A candidate is rejected for duplicate IDs, unknown fields or kinds, invalid references, and equal-priority overlapping routes. The complete example uses distinct explicit route priorities.
 
-Use protected environment injection for the mandatory nonempty credentials: `GITLAB_TOKEN`, `GITHUB_WEBHOOK_SECRET`, `DOKPLOY_API_KEY`, and `APPLICATION_ADMIN_TOKEN`. Keep values out of Git, URLs, command lines, and webhook payloads. The checked-in complete example contains only `${...}` references; copy the directory outside the repository before adding real identifiers and environment values.
+Use protected environment injection for the mandatory nonempty credentials: `GITLAB_TOKEN`, `GITHUB_WEBHOOK_SECRET`, `HARBOR_AUTHORIZATION`, `DOKPLOY_API_KEY`, and `APPLICATION_ADMIN_TOKEN`. Keep values out of Git, URLs, command lines, and webhook payloads. The checked-in complete example contains only `${...}` references; copy the directory outside the repository before adding real identifiers and environment values.
 
 ```sh
 cp .env.example .env
@@ -51,8 +51,9 @@ The public listener exposes only these routes:
 
 - GitLab: `POST /hooks/gitlab`
 - GitHub: `POST /hooks/github/{source_id}`
+- Harbor: `POST /hooks/harbor/{source_id}`
 
-For the complete example, replace the GitHub `{source_id}` with `github-example` after substituting your own source IDs.
+For the complete example, replace `{source_id}` with `github-example` or `harbor-example` after substituting your own source IDs.
 
 In GitLab, create every project webhook with the same Hookfly public URL ending in `/hooks/gitlab`, select **Push events** and **Pipeline events**, and set its secret token to the protected value referenced by that source's `token`. Hookfly uses the standard `X-Gitlab-Token` request header to select and authenticate the configured source, then resolves the repository by the payload's numeric project ID. A common single-instance setup needs no GitLab base URL. Multiple GitLab instances use separate sources with distinct tokens, and duplicate GitLab source tokens make the complete configuration invalid. Source IDs remain internal routing and history identities and do not appear in the GitLab webhook URL.
 
@@ -60,7 +61,9 @@ GitLab's event UUID identifies a delivery for duplicate detection; it does not s
 
 In GitHub, create a repository webhook with the Hookfly public URL ending in `/hooks/github/{source_id}`, set content type to `application/json`, select the events that your routes use from **Workflow runs**, **Pushes**, **Workflow jobs**, and **Pull requests**, and set the webhook secret to the protected value referenced by that source's `secret`. GitHub sources require a nonempty webhook secret.
 
-When both push and pipeline webhooks are enabled, the event list projects one revision lifecycle: a push appears immediately as waiting for its pipeline, then the first matching push-triggered pipeline replaces that waiting stage and continues through its source and deployment states. Hookfly correlates this lifecycle by provider, source, repository, ref, revision, and event time. The original webhook evidence remains stored as separate immutable events.
+In Harbor, create an HTTP webhook with the Hookfly public URL ending in `/hooks/harbor/{source_id}`. Select either **Default** or **CloudEvents** payload format, subscribe to **Artifact pushed**, and set **Authentication Header** to the exact protected value referenced by that source's `authorization`. Hookfly authenticates the request's `Authorization` header, resolves the configured repository from Harbor's `repo_full_name`, maps the artifact tag to `ref`, and maps the manifest digest to `revision`. Artifact pushes can match `artifact_push` routes; authenticated pull, delete, scan, quota, replication, and retention events are recorded as unsupported and never trigger a deployment.
+
+For GitLab and GitHub, when both push and pipeline webhooks are enabled, the event list projects one revision lifecycle: a push appears immediately as waiting for its pipeline, then the first matching push-triggered pipeline replaces that waiting stage and continues through its source and deployment states. Hookfly correlates this lifecycle by provider, source, repository, ref, revision, and event time. The original webhook evidence remains stored as separate immutable events. Harbor artifact pushes are independent events and do not enter this Git pipeline correlation.
 
 ## Configure Dokploy
 

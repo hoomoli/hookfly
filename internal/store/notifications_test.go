@@ -104,6 +104,30 @@ func TestListNotificationsEmitsIdentifiedPushFactsWithoutRouting(t *testing.T) {
 	}
 }
 
+func TestListNotificationsEmitsHarborArtifactPushAsReceivedPush(t *testing.T) {
+	s := openTestStore(t)
+	command := canonicalCommand("harbor", "harbor-a", "application-image", "artifact-push")
+	command.CanonicalEvent.Event = "artifact_push"
+	command.CanonicalEvent.Ref = "latest"
+	command.CanonicalEvent.Revision = "sha256:abc123"
+	command.RoutingResult = domain.RoutingDeploy
+	if _, err := s.Ingest(context.Background(), command); err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := s.ListNotifications(context.Background(), NotificationQuery{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("artifact push facts = %#v", page.Items)
+	}
+	fact := page.Items[0]
+	if fact.Category != "push" || fact.Outcome != "received" || fact.Provider != "harbor" || fact.SourceID != "harbor-a" || fact.Repository != "application-image" || fact.Summary != "Artifact push received" {
+		t.Fatalf("artifact push fact = %#v", fact)
+	}
+}
+
 func TestListNotificationsUsesPipelineCommitMessageAsSummary(t *testing.T) {
 	s := openTestStore(t)
 	command := canonicalCommand("gitlab", "gitlab-a", "client-dist", "pipeline-with-commit")

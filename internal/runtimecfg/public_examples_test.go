@@ -15,6 +15,7 @@ func TestPublicExamplesCompile(t *testing.T) {
 		value, ok := map[string]string{
 			"GITLAB_TOKEN":            "test-gitlab-token",
 			"GITHUB_WEBHOOK_SECRET":   "test-github-secret",
+			"HARBOR_AUTHORIZATION":    "Bearer test-harbor-secret",
 			"DOKPLOY_API_KEY":         "test-dokploy-key",
 			"APPLICATION_ADMIN_TOKEN": "test-application-admin-token",
 		}[name]
@@ -31,11 +32,11 @@ func TestPublicExamplesCompile(t *testing.T) {
 			path: filepath.Join(configRoot, "hookfly.yaml"),
 		},
 		{
-			name:        "routing example compiles both providers and deployment target types",
+			name:        "routing example compiles all providers and deployment target types",
 			path:        filepath.Join(configRoot, "routing.example", "hookfly.yaml"),
-			wantSources: 2,
+			wantSources: 3,
 			wantTargets: 2,
-			wantRoutes:  2,
+			wantRoutes:  3,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -78,8 +79,9 @@ func TestPublicExampleRoutesDeployCanonicalProviderEvents(t *testing.T) {
 	}
 
 	wantActions := map[string]config.Action{
-		"deploy-gitlab-main": {Type: "deploy", Targets: []string{"production"}},
-		"deploy-github-main": {Type: "deploy", Targets: []string{"production"}},
+		"deploy-gitlab-main":   {Type: "deploy", Targets: []string{"production"}},
+		"deploy-github-main":   {Type: "deploy", Targets: []string{"production"}},
+		"deploy-harbor-latest": {Type: "deploy", Targets: []string{"production"}},
 	}
 	if got := len(generation.routes); got != len(wantActions) {
 		t.Fatalf("route count = %d, want %d", got, len(wantActions))
@@ -99,18 +101,28 @@ func TestPublicExampleRoutesDeployCanonicalProviderEvents(t *testing.T) {
 		headers                         http.Header
 		payload                         []byte
 		wantRuleID                      string
+		wantRepository                  string
 	}{
 		{
 			name: "GitLab pipeline", provider: "gitlab", sourceID: "gitlab-example", event: "pipeline",
-			headers:    publicExampleHeader("X-Gitlab-Event", "Pipeline Hook"),
-			payload:    []byte(`{"project":{"id":10001},"object_attributes":{"ref":"main","status":"SUCCESS","sha":"abc123","id":88,"source":"PUSH"}}`),
-			wantRuleID: "deploy-gitlab-main",
+			headers:        publicExampleHeader("X-Gitlab-Event", "Pipeline Hook"),
+			payload:        []byte(`{"project":{"id":10001},"object_attributes":{"ref":"main","status":"SUCCESS","sha":"abc123","id":88,"source":"PUSH"}}`),
+			wantRuleID:     "deploy-gitlab-main",
+			wantRepository: "application",
 		},
 		{
 			name: "GitHub workflow run", provider: "github", sourceID: "github-example", event: "pipeline",
-			headers:    publicExampleHeader("X-GitHub-Event", "workflow_run"),
-			payload:    []byte(`{"repository":{"id":20001},"workflow_run":{"head_branch":"main","conclusion":"SUCCESS","status":"completed","head_sha":"abc123","id":88,"event":"push"}}`),
-			wantRuleID: "deploy-github-main",
+			headers:        publicExampleHeader("X-GitHub-Event", "workflow_run"),
+			payload:        []byte(`{"repository":{"id":20001},"workflow_run":{"head_branch":"main","conclusion":"SUCCESS","status":"completed","head_sha":"abc123","id":88,"event":"push"}}`),
+			wantRuleID:     "deploy-github-main",
+			wantRepository: "application",
+		},
+		{
+			name: "Harbor artifact push", provider: "harbor", sourceID: "harbor-example", event: "artifact_push",
+			headers:        publicExampleHeader("Content-Type", "application/json"),
+			payload:        []byte(`{"type":"PUSH_ARTIFACT","event_data":{"resources":[{"digest":"sha256:abc123","tag":"latest","resource_url":"registry.example.invalid/example/application:latest"}],"repository":{"repo_full_name":"example/application"}}}`),
+			wantRuleID:     "deploy-harbor-latest",
+			wantRepository: "application-image",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -122,7 +134,7 @@ func TestPublicExampleRoutesDeployCanonicalProviderEvents(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Normalize() error = %v", err)
 			}
-			if !incoming.Supported || event.Event != test.event || event.Repository != "application" {
+			if !incoming.Supported || event.Event != test.event || event.Repository != test.wantRepository {
 				t.Fatalf("Normalize() event/incoming = %#v/%#v", event, incoming)
 			}
 			decision, err := generation.Route(event)
@@ -150,6 +162,7 @@ func publicExampleBundle() (*config.Bundle, error) {
 		value, ok := map[string]string{
 			"GITLAB_TOKEN":            "test-gitlab-token",
 			"GITHUB_WEBHOOK_SECRET":   "test-github-secret",
+			"HARBOR_AUTHORIZATION":    "Bearer test-harbor-secret",
 			"DOKPLOY_API_KEY":         "test-dokploy-key",
 			"APPLICATION_ADMIN_TOKEN": "test-application-admin-token",
 		}[name]

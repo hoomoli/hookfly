@@ -168,6 +168,6 @@ export function notificationFactEnabled(state: StoredNotificationState, fact: No
 }
 
 function repositoryIdentityForFact(fact: NotificationFact): RepositoryPreferenceIdentity | undefined {
-  if ((fact.provider !== "github" && fact.provider !== "gitlab") || typeof fact.source_id !== "string" || !fact.source_id.trim() || typeof fact.repository !== "string" || !fact.repository.trim()) return undefined;
+  if ((fact.provider !== "github" && fact.provider !== "gitlab" && fact.provider !== "harbor") || typeof fact.source_id !== "string" || !fact.source_id.trim() || typeof fact.repository !== "string" || !fact.repository.trim()) return undefined;
   return { provider: fact.provider, source_id: fact.source_id, repository: fact.repository };
 }

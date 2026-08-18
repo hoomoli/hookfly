@@ -17,6 +17,7 @@ import (
 	"github.com/hoomoli/hookfly/internal/domain"
 	"github.com/hoomoli/hookfly/internal/github"
 	"github.com/hoomoli/hookfly/internal/gitlab"
+	"github.com/hoomoli/hookfly/internal/harbor"
 	"github.com/hoomoli/hookfly/internal/httptarget"
 	"github.com/hoomoli/hookfly/internal/provider"
 	"github.com/hoomoli/hookfly/internal/store"
@@ -132,7 +133,7 @@ func compileBundle(bundle *config.Bundle, logger *slog.Logger) (*Generation, err
 	generation := &Generation{
 		bundle: candidate, connections: make(map[string]*connection, len(candidate.DokployConnections)),
 		targets:          make(map[string]*Target, len(candidate.Targets)),
-		sources:          make(map[sourceKey]*Source, len(candidate.GitLabSources)+len(candidate.GitHubSources)),
+		sources:          make(map[sourceKey]*Source, len(candidate.GitLabSources)+len(candidate.GitHubSources)+len(candidate.HarborSources)),
 		gitLabSources:    make(map[[sha256.Size]byte]*Source, len(candidate.GitLabSources)),
 		repositoryLimits: make(map[store.RepositoryKey]int), routes: append([]config.Route(nil), candidate.Routes...),
 	}
@@ -171,6 +172,9 @@ func compileBundle(bundle *config.Bundle, logger *slog.Logger) (*Generation, err
 	}
 	for _, configured := range candidate.GitHubSources {
 		generation.addSource("github", configured.ID, github.New(configured.Secret), configured.Repositories)
+	}
+	for _, configured := range candidate.HarborSources {
+		generation.addSource("harbor", configured.ID, harbor.New(configured.Authorization), configured.Repositories)
 	}
 	for _, configured := range candidate.Targets {
 		targetTimeout := timeout
@@ -251,6 +255,7 @@ func cloneBundle(bundle *config.Bundle) *config.Bundle {
 	copyBundle := *bundle
 	copyBundle.GitLabSources = append([]config.GitLabSource(nil), bundle.GitLabSources...)
 	copyBundle.GitHubSources = append([]config.GitHubSource(nil), bundle.GitHubSources...)
+	copyBundle.HarborSources = append([]config.HarborSource(nil), bundle.HarborSources...)
 	copyBundle.DokployConnections = append([]config.DokployConnection(nil), bundle.DokployConnections...)
 	copyBundle.HTTPConnections = append([]config.HTTPConnection(nil), bundle.HTTPConnections...)
 	copyBundle.Targets = append([]config.Target(nil), bundle.Targets...)
@@ -262,6 +267,10 @@ func cloneBundle(bundle *config.Bundle) *config.Bundle {
 	for index := range copyBundle.GitHubSources {
 		copyBundle.GitHubSources[index].Repositories = append([]config.Repository(nil), bundle.GitHubSources[index].Repositories...)
 		cloneRepositoryLimits(copyBundle.GitHubSources[index].Repositories)
+	}
+	for index := range copyBundle.HarborSources {
+		copyBundle.HarborSources[index].Repositories = append([]config.Repository(nil), bundle.HarborSources[index].Repositories...)
+		cloneRepositoryLimits(copyBundle.HarborSources[index].Repositories)
 	}
 	for index := range copyBundle.Targets {
 		copyBundle.Targets[index].PollTimeout = cloneDuration(bundle.Targets[index].PollTimeout)
@@ -716,6 +725,9 @@ func bundleDigest(bundle *config.Bundle) string {
 	}
 	for _, source := range bundle.GitHubSources {
 		appendSource("github", source.ID, source.Repositories)
+	}
+	for _, source := range bundle.HarborSources {
+		appendSource("harbor", source.ID, source.Repositories)
 	}
 	sort.Slice(safe.Sources, func(left, right int) bool {
 		if safe.Sources[left].Provider != safe.Sources[right].Provider {

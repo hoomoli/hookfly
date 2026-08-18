@@ -102,11 +102,12 @@ func (a *App) Prepare(ctx context.Context) error {
 	return a.prepareErr
 }
 
-// NewPublicMux exposes only the two provider-bound webhook routes.
-func NewPublicMux(gitlabHandler, githubHandler http.Handler) *http.ServeMux {
+// NewPublicMux exposes only the provider-bound webhook routes.
+func NewPublicMux(gitlabHandler, githubHandler, harborHandler http.Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle("POST /hooks/gitlab", gitlabHandler)
 	mux.Handle("POST /hooks/github/{source_id}", githubHandler)
+	mux.Handle("POST /hooks/harbor/{source_id}", harborHandler)
 	return mux
 }
 
@@ -114,6 +115,7 @@ func (a *App) servers() (*http.Server, *http.Server) {
 	publicMux := NewPublicMux(
 		publichook.New("gitlab", a.manager, a.store, time.Now),
 		publichook.New("github", a.manager, a.store, time.Now),
+		publichook.New("harbor", a.manager, a.store, time.Now),
 	)
 	adminDependencies := adminapi.Dependencies{Provider: a.managementAuth, Auth: a.managementAuth}
 	if a.manager != nil {

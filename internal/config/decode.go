@@ -80,6 +80,18 @@ func decodeResource(bundle *Bundle, source SourceFile, lookup EnvLookup) error {
 			}
 			bundle.GitHubSources = append(bundle.GitHubSources, sourceValue)
 		}
+	case "HarborSources":
+		var document harborSourcesDocument
+		if err := decodeStrict(node, &document); err != nil {
+			return strictSourceDecodeError(source)
+		}
+		for _, configured := range document.Sources {
+			sourceValue, err := configured.toHarborSource(source.Path)
+			if err != nil {
+				return err
+			}
+			bundle.HarborSources = append(bundle.HarborSources, sourceValue)
+		}
 	case "DokployTargets":
 		var document dokployTargetsDocument
 		if err := decodeStrict(node, &document); err != nil {
@@ -232,7 +244,7 @@ func secretEnvironmentPath(path []string) bool {
 		return false
 	}
 	switch path[len(path)-1] {
-	case "token", "secret", "api_key":
+	case "token", "secret", "authorization", "api_key":
 		return true
 	case "value":
 		return len(path) >= 2 && path[len(path)-2] == "auth"
@@ -316,6 +328,42 @@ type gitHubRepositoryDocument struct {
 	Name         string `yaml:"name"`
 	RepositoryID int64  `yaml:"repository_id"`
 	HistoryLimit *int   `yaml:"history_limit"`
+}
+
+type harborSourcesDocument struct {
+	Kind    string                 `yaml:"kind"`
+	Sources []harborSourceDocument `yaml:"sources"`
+}
+
+type harborSourceDocument struct {
+	ID            string                     `yaml:"id"`
+	Authorization string                     `yaml:"authorization"`
+	Repositories  []harborRepositoryDocument `yaml:"repositories"`
+}
+
+type harborRepositoryDocument struct {
+	ID           string `yaml:"id"`
+	Name         string `yaml:"name"`
+	Repository   string `yaml:"repository"`
+	HistoryLimit *int   `yaml:"history_limit"`
+}
+
+func (document harborSourceDocument) toHarborSource(path string) (HarborSource, error) {
+	if document.Authorization == "" {
+		return HarborSource{}, fmt.Errorf("decode configuration %q: sources authorization is required", path)
+	}
+	source := HarborSource{ID: document.ID, Authorization: document.Authorization, Location: SourceLocation{Path: path, Field: "sources"}}
+	for index, configured := range document.Repositories {
+		name := configured.Name
+		if name == "" {
+			name = configured.ID
+		}
+		source.Repositories = append(source.Repositories, Repository{
+			ID: configured.ID, Name: name, ExternalID: configured.Repository,
+			HistoryLimit: configured.HistoryLimit, Location: SourceLocation{Path: path, Field: fmt.Sprintf("repositories[%d]", index)},
+		})
+	}
+	return source, nil
 }
 
 func (document gitHubSourceDocument) toGitHubSource(path string) (GitHubSource, error) {

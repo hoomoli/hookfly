@@ -17,7 +17,7 @@ export interface NotificationFact {
   event_id: string;
   delivery_id?: string;
   target_id?: string;
-  provider?: "gitlab" | "github";
+  provider?: "gitlab" | "github" | "harbor";
   source_id?: string;
   repository: string;
   summary: string;
@@ -58,7 +58,7 @@ export interface ClearHistoryResponse {
 }
 
 export interface Repository {
-  provider: "gitlab" | "github";
+  provider: "gitlab" | "github" | "harbor";
   source_id: string;
   id: string;
   name: string;
@@ -144,7 +144,7 @@ export interface EventSummary {
   id: string;
   received_at: string;
   event_type: string;
-  provider: "gitlab" | "github";
+  provider: "gitlab" | "github" | "harbor";
   source_id: string;
   repository: string;
   ref: string | null;

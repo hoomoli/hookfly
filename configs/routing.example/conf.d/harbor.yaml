@@ -1,0 +1,8 @@
+kind: HarborSources
+sources:
+  - id: harbor-example
+    authorization: ${HARBOR_AUTHORIZATION}
+    repositories:
+      - id: application-image
+        name: application image
+        repository: example/application
