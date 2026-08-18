@@ -126,6 +126,15 @@ func decodeResource(bundle *Bundle, source SourceFile, lookup EnvLookup) error {
 			document.Targets[index].Location = SourceLocation{Path: source.Path, Field: "targets"}
 		}
 		bundle.Targets = append(bundle.Targets, document.Targets...)
+	case "ForwardTargets":
+		var document forwardTargetsDocument
+		if err := decodeStrict(node, &document); err != nil {
+			return strictSourceDecodeError(source)
+		}
+		for index := range document.Targets {
+			document.Targets[index].Location = SourceLocation{Path: source.Path, Field: "targets"}
+		}
+		bundle.Targets = append(bundle.Targets, document.Targets...)
 	case "Routes":
 		var document routesDocument
 		if err := decodeStrict(node, &document); err != nil {
@@ -399,6 +408,11 @@ type httpConnectionsDocument struct {
 }
 
 type httpTargetsDocument struct {
+	Kind    string   `yaml:"kind"`
+	Targets []Target `yaml:"targets"`
+}
+
+type forwardTargetsDocument struct {
 	Kind    string   `yaml:"kind"`
 	Targets []Target `yaml:"targets"`
 }

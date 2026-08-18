@@ -35,6 +35,7 @@ type Target struct {
 	Client         *dokploy.Client
 	Type           string
 	HTTP           *HTTPExecutable
+	Forward        *ForwardExecutable
 	PollInterval   time.Duration
 	PollTimeout    time.Duration
 	Snapshot       []byte
@@ -45,6 +46,11 @@ type Target struct {
 type HTTPExecutable struct {
 	Client  *httptarget.Client
 	Request httptarget.Request
+}
+
+// ForwardExecutable is the immutable client for one raw webhook destination.
+type ForwardExecutable struct {
+	Client *httptarget.ForwardClient
 }
 
 // Generation contains all projections that must change atomically after a reload.
@@ -207,6 +213,21 @@ func compileBundle(bundle *config.Bundle, logger *slog.Logger) (*Generation, err
 				return nil, fmt.Errorf("encode target binding: %w", err)
 			}
 			generation.targets[configured.ID] = &Target{ID: configured.ID, Type: configured.Type, ConnectionID: configured.Connection, HTTP: &HTTPExecutable{Client: client, Request: httpRequest}, PollInterval: interval, PollTimeout: targetTimeout, Snapshot: snapshot, BindingVersion: bindingVersion, Fingerprint: httpBindingFingerprint(bindingVersion, connection.ID, connection.BaseURL, httpSnapshot)}
+		case "forward":
+			canonical, err := httptarget.CanonicalForwardURL(configured.URL)
+			if err != nil {
+				return nil, fmt.Errorf("compile forward target: %w", err)
+			}
+			client, err := httptarget.NewForwardClient(canonical, configured.Host, configured.AllowPrivateNetwork, http.DefaultClient)
+			if err != nil {
+				return nil, fmt.Errorf("compile forward target: %w", err)
+			}
+			forwardSnapshot := forwardTargetSnapshot{URL: canonical, Host: configured.Host, AllowPrivateNetwork: configured.AllowPrivateNetwork}
+			snapshot, err := json.Marshal(targetSnapshot{BindingVersion: bindingVersion, ID: configured.ID, Type: configured.Type, Forward: &forwardSnapshot})
+			if err != nil {
+				return nil, fmt.Errorf("encode target binding: %w", err)
+			}
+			generation.targets[configured.ID] = &Target{ID: configured.ID, Type: configured.Type, Forward: &ForwardExecutable{Client: client}, PollInterval: interval, PollTimeout: targetTimeout, Snapshot: snapshot, BindingVersion: bindingVersion, Fingerprint: forwardBindingFingerprint(bindingVersion, forwardSnapshot)}
 		}
 	}
 	generation.digest = bundleDigest(candidate)
@@ -459,6 +480,10 @@ func cloneTarget(target *Target) *Target {
 		copyHTTP.Request.SuccessStatuses = append([]int(nil), target.HTTP.Request.SuccessStatuses...)
 		copyTarget.HTTP = &copyHTTP
 	}
+	if target.Forward != nil {
+		copyForward := *target.Forward
+		copyTarget.Forward = &copyForward
+	}
 	return &copyTarget
 }
 
@@ -568,13 +593,20 @@ func matchesOptional(expected *string, actual string) bool {
 }
 
 type targetSnapshot struct {
-	BindingVersion int                 `json:"binding_version"`
-	ID             string              `json:"id"`
-	Type           string              `json:"type"`
-	ResourceType   string              `json:"resource_type"`
-	ResourceID     string              `json:"resource_id"`
-	Connection     connectionSnapshot  `json:"connection"`
-	HTTP           *httpTargetSnapshot `json:"http,omitempty"`
+	BindingVersion int                    `json:"binding_version"`
+	ID             string                 `json:"id"`
+	Type           string                 `json:"type"`
+	ResourceType   string                 `json:"resource_type"`
+	ResourceID     string                 `json:"resource_id"`
+	Connection     connectionSnapshot     `json:"connection"`
+	HTTP           *httpTargetSnapshot    `json:"http,omitempty"`
+	Forward        *forwardTargetSnapshot `json:"forward,omitempty"`
+}
+
+type forwardTargetSnapshot struct {
+	URL                 string `json:"url"`
+	Host                string `json:"host"`
+	AllowPrivateNetwork bool   `json:"allow_private_network,omitempty"`
 }
 
 type httpTargetSnapshot struct {
@@ -649,6 +681,11 @@ func httpBindingFingerprint(version int, connectionID, baseURL string, request h
 	return bindingFingerprintFields(fmt.Sprintf("%d", version), "http", connectionID, baseURL, string(encoded))
 }
 
+func forwardBindingFingerprint(version int, target forwardTargetSnapshot) string {
+	encoded, _ := json.Marshal(target)
+	return bindingFingerprintFields(fmt.Sprintf("%d", version), "forward", string(encoded))
+}
+
 func bindingFingerprintFields(fields ...string) string {
 	hash := sha256.New()
 	for _, field := range fields {
@@ -678,18 +715,21 @@ func bundleDigest(bundle *config.Bundle) string {
 		BaseURL string `json:"base_url"`
 	}
 	type digestTarget struct {
-		ID              string                           `json:"id"`
-		Type            string                           `json:"type"`
-		Connection      string                           `json:"connection"`
-		ResourceType    string                           `json:"resource_type"`
-		ResourceID      string                           `json:"resource_id"`
-		PollTimeout     string                           `json:"poll_timeout,omitempty"`
-		Method          string                           `json:"method,omitempty"`
-		Path            string                           `json:"path,omitempty"`
-		Query           map[string]config.HTTPStringList `json:"query,omitempty"`
-		Headers         map[string]string                `json:"headers,omitempty"`
-		Body            *config.HTTPBody                 `json:"body,omitempty"`
-		SuccessStatuses []int                            `json:"success_statuses,omitempty"`
+		ID                  string                           `json:"id"`
+		Type                string                           `json:"type"`
+		Connection          string                           `json:"connection"`
+		ResourceType        string                           `json:"resource_type"`
+		ResourceID          string                           `json:"resource_id"`
+		PollTimeout         string                           `json:"poll_timeout,omitempty"`
+		Method              string                           `json:"method,omitempty"`
+		Path                string                           `json:"path,omitempty"`
+		Query               map[string]config.HTTPStringList `json:"query,omitempty"`
+		Headers             map[string]string                `json:"headers,omitempty"`
+		Body                *config.HTTPBody                 `json:"body,omitempty"`
+		SuccessStatuses     []int                            `json:"success_statuses,omitempty"`
+		URL                 string                           `json:"url,omitempty"`
+		Host                string                           `json:"host,omitempty"`
+		AllowPrivateNetwork bool                             `json:"allow_private_network,omitempty"`
 	}
 	type digestRoute struct {
 		ID       string            `json:"id"`
@@ -746,7 +786,7 @@ func bundleDigest(bundle *config.Bundle) string {
 		if target.PollTimeout != nil {
 			pollTimeout = target.PollTimeout.Duration.String()
 		}
-		safe.Targets = append(safe.Targets, digestTarget{ID: target.ID, Type: target.Type, Connection: target.Connection, ResourceType: target.ResourceType, ResourceID: target.ResourceID, PollTimeout: pollTimeout, Method: target.Method, Path: target.Path, Query: cloneConfigHTTPQuery(target.Query), Headers: cloneStringMap(target.Headers), Body: cloneConfigHTTPBody(target.Body), SuccessStatuses: append([]int(nil), target.SuccessStatuses...)})
+		safe.Targets = append(safe.Targets, digestTarget{ID: target.ID, Type: target.Type, Connection: target.Connection, ResourceType: target.ResourceType, ResourceID: target.ResourceID, PollTimeout: pollTimeout, Method: target.Method, Path: target.Path, Query: cloneConfigHTTPQuery(target.Query), Headers: cloneStringMap(target.Headers), Body: cloneConfigHTTPBody(target.Body), SuccessStatuses: append([]int(nil), target.SuccessStatuses...), URL: target.URL, Host: target.Host, AllowPrivateNetwork: target.AllowPrivateNetwork})
 	}
 	for _, route := range bundle.Routes {
 		safe.Routes = append(safe.Routes, digestRoute{ID: route.ID, Priority: *route.Priority, Match: route.Match, Action: route.Action})

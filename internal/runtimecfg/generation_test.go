@@ -123,6 +123,29 @@ func TestCompileHTTPTargetKeepsCredentialOutOfRuntimeProjections(t *testing.T) {
 	}
 }
 
+func TestCompileForwardTargetCreatesReplayableBinding(t *testing.T) {
+	// Break caught: compiling forward as a normal authenticated HTTP target or omitting Host policy from its binding.
+	bundle := generationBundle("https://dokploy.example.invalid")
+	bundle.Targets = []config.Target{{
+		ID: "production", Type: "forward", URL: "https://receiver.example.invalid/hooks/gitlab", Host: "origin",
+	}}
+	generation, err := Compile(bundle, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, found := generation.Target("production")
+	if !found || target.Type != "forward" || target.Forward == nil || target.Forward.Client == nil {
+		t.Fatalf("Target() = %#v/%v", target, found)
+	}
+	resolved, status := generation.ResolveTarget("production", target.Snapshot)
+	if status != BindingCompatible || resolved == nil || resolved.Forward == nil {
+		t.Fatalf("ResolveTarget() = %#v/%q", resolved, status)
+	}
+	if !strings.Contains(string(target.Snapshot), `"url":"https://receiver.example.invalid/hooks/gitlab"`) || !strings.Contains(string(target.Snapshot), `"host":"origin"`) {
+		t.Fatalf("snapshot = %s", target.Snapshot)
+	}
+}
+
 func TestGenerationSelectsGitLabSourceByToken(t *testing.T) {
 	bundle := generationBundle("https://dokploy.example.invalid")
 	bundle.GitLabSources = append(bundle.GitLabSources, config.GitLabSource{

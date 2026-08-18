@@ -128,19 +128,22 @@ func (body *HTTPBody) UnmarshalYAML(node *yaml.Node) error {
 }
 
 type Target struct {
-	ID              string                    `yaml:"id"`
-	Type            string                    `yaml:"type"`
-	Connection      string                    `yaml:"connection"`
-	ResourceType    string                    `yaml:"resource_type"`
-	ResourceID      string                    `yaml:"resource_id"`
-	PollTimeout     *Duration                 `yaml:"poll_timeout"`
-	Method          string                    `yaml:"method"`
-	Path            string                    `yaml:"path"`
-	Query           map[string]HTTPStringList `yaml:"query"`
-	Headers         map[string]string         `yaml:"headers"`
-	Body            *HTTPBody                 `yaml:"body"`
-	SuccessStatuses []int                     `yaml:"success_statuses"`
-	Location        SourceLocation            `yaml:"-"`
+	ID                  string                    `yaml:"id"`
+	Type                string                    `yaml:"type"`
+	Connection          string                    `yaml:"connection"`
+	ResourceType        string                    `yaml:"resource_type"`
+	ResourceID          string                    `yaml:"resource_id"`
+	PollTimeout         *Duration                 `yaml:"poll_timeout"`
+	Method              string                    `yaml:"method"`
+	Path                string                    `yaml:"path"`
+	Query               map[string]HTTPStringList `yaml:"query"`
+	Headers             map[string]string         `yaml:"headers"`
+	Body                *HTTPBody                 `yaml:"body"`
+	SuccessStatuses     []int                     `yaml:"success_statuses"`
+	URL                 string                    `yaml:"url"`
+	Host                string                    `yaml:"host"`
+	AllowPrivateNetwork bool                      `yaml:"allow_private_network"`
+	Location            SourceLocation            `yaml:"-"`
 }
 
 // SourceFile is one configuration file selected during discovery.

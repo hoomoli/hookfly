@@ -42,13 +42,13 @@ func (g *Generation) ResolveTarget(targetID string, snapshot []byte) (*Target, B
 		return nil, BindingUnavailable
 	}
 	version := *versionHeader.BindingVersion
-	if version != current.BindingVersion || historical.ID != targetID || historical.Type == "" || historical.Connection.BaseURL == "" || historical.Type != current.Type {
+	if version != current.BindingVersion || historical.ID != targetID || historical.Type == "" || historical.Type != current.Type {
 		return nil, BindingUnavailable
 	}
 	var fingerprint string
 	switch historical.Type {
 	case "dokploy":
-		if historical.ResourceType == "" || historical.ResourceID == "" {
+		if historical.ResourceType == "" || historical.ResourceID == "" || historical.Connection.BaseURL == "" {
 			return nil, BindingUnavailable
 		}
 		canonical, err := dokploy.CanonicalBaseURL(historical.Connection.BaseURL)
@@ -57,7 +57,7 @@ func (g *Generation) ResolveTarget(targetID string, snapshot []byte) (*Target, B
 		}
 		fingerprint = bindingFingerprint(version, historical.Type, historical.ResourceType, canonical, historical.ResourceID)
 	case "http":
-		if historical.HTTP == nil || historical.Connection.ID == "" {
+		if historical.HTTP == nil || historical.Connection.ID == "" || historical.Connection.BaseURL == "" {
 			return nil, BindingUnavailable
 		}
 		canonical, err := httptarget.CanonicalBaseURL(historical.Connection.BaseURL)
@@ -65,6 +65,17 @@ func (g *Generation) ResolveTarget(targetID string, snapshot []byte) (*Target, B
 			return nil, BindingUnavailable
 		}
 		fingerprint = httpBindingFingerprint(version, historical.Connection.ID, canonical, *historical.HTTP)
+	case "forward":
+		if historical.Forward == nil {
+			return nil, BindingUnavailable
+		}
+		canonical, err := httptarget.CanonicalForwardURL(historical.Forward.URL)
+		if err != nil {
+			return nil, BindingUnavailable
+		}
+		forward := *historical.Forward
+		forward.URL = canonical
+		fingerprint = forwardBindingFingerprint(version, forward)
 	default:
 		return nil, BindingUnavailable
 	}

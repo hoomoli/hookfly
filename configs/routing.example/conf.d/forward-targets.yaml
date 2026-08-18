@@ -1,0 +1,6 @@
+kind: ForwardTargets
+targets:
+  - id: downstream-webhook-example
+    type: forward
+    url: https://receiver.example.invalid/hooks/gitlab
+    host: target

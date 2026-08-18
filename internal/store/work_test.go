@@ -45,6 +45,24 @@ func TestClaimPendingAttemptClaimsExistingInitialOnceAndAudits(t *testing.T) {
 	assertAuditTransition(t, s, work.AttemptID, "transport_sending", "pending", "sending")
 }
 
+func TestClaimPendingAttemptReturnsPrivateForwardRequestForRetry(t *testing.T) {
+	// Break caught: losing the original sensitive headers or body between ingest and asynchronous dispatch/retry.
+	s := openTestStore(t)
+	command := ingestParams("forward-envelope", []domain.NewDelivery{{TargetID: "forward-target"}})
+	command.RequestJSON = []byte(`{"version":1,"method":"POST","host":"hookfly.example.invalid","raw_query":"raw=a%2Bb","headers":{"X-Gitlab-Token":["gitlab-secret"],"X-Repeated":["first","second"]}}`)
+	command.PayloadJSON = []byte(`{"payload":"unchanged"}`)
+	if _, err := s.Ingest(context.Background(), command); err != nil {
+		t.Fatal(err)
+	}
+	work, claimed, err := s.ClaimPendingAttempt(context.Background(), time.UnixMilli(2000))
+	if err != nil || !claimed {
+		t.Fatalf("ClaimPendingAttempt() = %#v/%v/%v", work, claimed, err)
+	}
+	if !bytes.Equal(work.RequestJSON, command.RequestJSON) || !bytes.Equal(work.PayloadJSON, command.PayloadJSON) {
+		t.Fatalf("forward request = %s / %s", work.RequestJSON, work.PayloadJSON)
+	}
+}
+
 func TestRecordDeploymentRequestPersistsOnlyWhileAttemptIsSending(t *testing.T) {
 	// Break caught: losing pre-POST evidence on interruption, or rewriting evidence after the attempt leaves sending.
 	s := openTestStore(t)

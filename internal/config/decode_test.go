@@ -68,6 +68,29 @@ targets:
 	}
 }
 
+func TestDecodeForwardTargetDefaultsToTargetHost(t *testing.T) {
+	// Break caught: requiring an HTTP connection/auth contract or losing the explicit forwarding destination.
+	candidate := Candidate{
+		Global: source("/cfg/hookfly.yaml", globalYAML("conf.d")),
+		Resources: []SourceFile{source("/cfg/conf.d/forward-targets.yaml", `kind: ForwardTargets
+targets:
+  - id: downstream-gitlab
+    type: forward
+    url: https://receiver.example.invalid/webhooks/gitlab
+`)},
+	}
+	bundle, err := Decode(candidate, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateAndCanonicalize(bundle); err != nil {
+		t.Fatal(err)
+	}
+	if got := bundle.Targets; len(got) != 1 || got[0].Type != "forward" || got[0].URL != "https://receiver.example.invalid/webhooks/gitlab" || got[0].Host != "target" {
+		t.Fatalf("Targets = %#v", got)
+	}
+}
+
 func TestDecodeHTTPFormTargetWithQueryAndBearerAuthentication(t *testing.T) {
 	candidate := Candidate{
 		Global: source("/cfg/hookfly.yaml", globalYAML("conf.d")),

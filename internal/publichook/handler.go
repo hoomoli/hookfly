@@ -132,6 +132,19 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		command.RuleSnapshot = append([]byte(nil), decision.RuleSnapshot...)
 		command.Deliveries = cloneDeliveries(decision.Deliveries)
 	}
+	if deferred || hasForwardDelivery(command.Deliveries) {
+		command.RequestJSON, err = json.Marshal(struct {
+			Version  int         `json:"version"`
+			Method   string      `json:"method"`
+			Host     string      `json:"host"`
+			RawQuery string      `json:"raw_query,omitempty"`
+			Headers  http.Header `json:"headers"`
+		}{Version: 1, Method: r.Method, Host: r.Host, RawQuery: r.URL.RawQuery, Headers: r.Header})
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Status: "internal_error"})
+			return
+		}
+	}
 
 	var result domain.IngestResult
 	if deferred {
@@ -201,6 +214,18 @@ func cloneDeliveries(deliveries []domain.NewDelivery) []domain.NewDelivery {
 		}
 	}
 	return cloned
+}
+
+func hasForwardDelivery(deliveries []domain.NewDelivery) bool {
+	for _, delivery := range deliveries {
+		var snapshot struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(delivery.TargetSnapshot, &snapshot) == nil && snapshot.Type == "forward" {
+			return true
+		}
+	}
+	return false
 }
 
 type acceptedResponse struct {

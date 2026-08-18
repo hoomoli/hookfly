@@ -107,7 +107,7 @@ func (m *Manager) TargetInventory(ctx context.Context) TargetInventory {
 	for _, target := range targets {
 		item := TargetInventoryItem{ID: target.ID, ConnectionID: target.ConnectionID, ResourceType: target.ResourceType, ResourceID: target.ComposeID, Condition: TargetConditionUnavailable}
 		item.Containers = []TargetContainer{}
-		if target.Type == ConnectionTypeHTTP {
+		if target.Type == ConnectionTypeHTTP || target.Type == "forward" {
 			item.Name = target.ID
 			item.Condition = TargetConditionAvailable
 			result.Targets = append(result.Targets, item)

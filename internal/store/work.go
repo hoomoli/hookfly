@@ -26,6 +26,8 @@ type PendingAttempt struct {
 	AttemptID      string
 	TargetID       string
 	TargetSnapshot []byte
+	RequestJSON    []byte
+	PayloadJSON    []byte
 	ReceivedAt     time.Time
 	Event          domain.CanonicalEvent
 }
@@ -80,7 +82,7 @@ func (s *Store) ClaimPendingAttempt(ctx context.Context, now time.Time) (Pending
 	var work PendingAttempt
 	var receivedAt int64
 	row := tx.QueryRowContext(ctx, `
-		SELECT e.id, d.id, a.id, d.target_id, d.target_snapshot, e.received_at,
+		SELECT e.id, d.id, a.id, d.target_id, d.target_snapshot, e.forward_request_json, e.raw_payload_json, e.received_at,
 		       e.provider, e.source_id, e.repository_id, e.event, e.ref, e.status, e.revision, e.commit_message, e.external_id, e.trigger
 		FROM deliveries d
 		JOIN events e ON e.id = d.event_id
@@ -110,7 +112,7 @@ func (s *Store) ClaimPendingAttempt(ctx context.Context, now time.Time) (Pending
 		ORDER BY e.received_at, d.created_at, d.id
 		LIMIT 1`)
 	var ref, status, revision, commitMessage, externalID, trigger sql.NullString
-	err = row.Scan(&work.EventID, &work.DeliveryID, &work.AttemptID, &work.TargetID, &work.TargetSnapshot, &receivedAt,
+	err = row.Scan(&work.EventID, &work.DeliveryID, &work.AttemptID, &work.TargetID, &work.TargetSnapshot, &work.RequestJSON, &work.PayloadJSON, &receivedAt,
 		&work.Event.Provider, &work.Event.Source, &work.Event.Repository, &work.Event.Event,
 		&ref, &status, &revision, &commitMessage, &externalID, &trigger)
 	if errors.Is(err, sql.ErrNoRows) {

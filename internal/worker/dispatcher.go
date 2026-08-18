@@ -80,6 +80,9 @@ func (d *Dispatcher) RunOnce(ctx context.Context) (bool, error) {
 	if target.Type == "http" {
 		return d.dispatchHTTP(ctx, work, target)
 	}
+	if target.Type == "forward" {
+		return d.dispatchForward(ctx, work, target)
+	}
 	request := dokploy.DeployRequest{ComposeID: target.ComposeID, Description: "attempt_id=" + work.AttemptID}
 	var requestJSON []byte
 	cursor, _, cursorErr := target.Client.LatestDeploymentID(ctx, target.ComposeID)
@@ -166,6 +169,68 @@ func (d *Dispatcher) dispatchHTTP(ctx context.Context, work store.PendingAttempt
 	var requestJSON []byte
 	var recordErr error
 	response, dispatchErr := target.HTTP.Client.Dispatch(ctx, target.HTTP.Request, values, func(evidence []byte) error {
+		requestJSON = boundedSnapshot(json.RawMessage(evidence))
+		recordContext, cancelRecord := d.newTransitionContext(ctx)
+		defer cancelRecord()
+		recordErr = d.store.RecordDeploymentRequest(recordContext, work.AttemptID, requestJSON, d.clock())
+		return recordErr
+	})
+	if recordErr != nil {
+		return true, recordErr
+	}
+	at := d.clock()
+	responseJSON := httpResponseSnapshot(response, dispatchErr)
+	transitionContext, cancelTransition := d.newTransitionContext(ctx)
+	defer cancelTransition()
+	commitView := d.manager.Read()
+	if dispatchErr == nil {
+		err := d.store.MarkAccepted(transitionContext, work.AttemptID, requestJSON, responseJSON, at)
+		commitView.Unlock()
+		if err != nil {
+			return true, err
+		}
+		return true, d.afterTerminal(transitionContext)
+	}
+	var transportError *httptarget.TransportError
+	if errors.As(dispatchErr, &transportError) && transportError.Kind == httptarget.TransportUncertain {
+		err := d.store.MarkTransportUnknownTerminal(transitionContext, work.AttemptID, requestJSON, responseJSON, at)
+		commitView.Unlock()
+		if err != nil {
+			return true, err
+		}
+		return true, d.afterTerminal(transitionContext)
+	}
+	err := d.store.MarkTransportFailed(transitionContext, work.AttemptID, requestJSON, responseJSON, at)
+	commitView.Unlock()
+	if err != nil {
+		return true, err
+	}
+	return true, d.afterTerminal(transitionContext)
+}
+
+func (d *Dispatcher) dispatchForward(ctx context.Context, work store.PendingAttempt, target *runtimecfg.Target) (bool, error) {
+	fail := func(message string) (bool, error) {
+		transitionContext, cancelTransition := d.newTransitionContext(ctx)
+		defer cancelTransition()
+		commitView := d.manager.Read()
+		err := d.store.MarkTransportFailed(transitionContext, work.AttemptID, nil, boundedSnapshot(map[string]any{"kind": "definitive", "error": message}), d.clock())
+		commitView.Unlock()
+		if err != nil {
+			return true, err
+		}
+		return true, d.afterTerminal(transitionContext)
+	}
+	if target == nil || target.Forward == nil || target.Forward.Client == nil {
+		return fail("forward target is unavailable")
+	}
+	var incoming httptarget.ForwardRequest
+	if err := json.Unmarshal(work.RequestJSON, &incoming); err != nil || incoming.Version != 1 {
+		return fail("forward request is unavailable")
+	}
+	incoming.Body = append([]byte(nil), work.PayloadJSON...)
+	var requestJSON []byte
+	var recordErr error
+	response, dispatchErr := target.Forward.Client.Dispatch(ctx, incoming, func(evidence []byte) error {
 		requestJSON = boundedSnapshot(json.RawMessage(evidence))
 		recordContext, cancelRecord := d.newTransitionContext(ctx)
 		defer cancelRecord()

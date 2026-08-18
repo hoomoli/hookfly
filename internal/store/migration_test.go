@@ -44,7 +44,7 @@ func TestOpenCreatesFreshV2Schema(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"commit_message", "delivery_id", "event", "external_id", "provider", "raw_headers_json", "raw_payload_json", "ref", "repository_id", "revision", "source_id", "status", "trigger"}
+	want := []string{"commit_message", "delivery_id", "event", "external_id", "forward_request_json", "provider", "raw_headers_json", "raw_payload_json", "ref", "repository_id", "revision", "source_id", "status", "trigger"}
 	for _, column := range want {
 		index := sort.SearchStrings(columns, column)
 		if index == len(columns) || columns[index] != column {
@@ -106,7 +106,7 @@ func TestListEventsUsesPushPipelineCorrelationIndex(t *testing.T) {
 	}
 }
 
-func TestOpenAppliesDeploymentCorrelationMigrationToExistingV2Database(t *testing.T) {
+func TestOpenAppliesCurrentMigrationsToExistingV2Database(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "hookfly.db")
 	db, err := sql.Open("sqlite", path)
@@ -154,10 +154,10 @@ func TestOpenAppliesDeploymentCorrelationMigrationToExistingV2Database(t *testin
 	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE id = 'existing-event'`).Scan(&existingEvents); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE name IN ('002_deployment_correlation.sql', '002_event_commit_message.sql', '003_pipeline_correlation_index.sql', '004_push_pipeline_correlation_index.sql')`).Scan(&migrationRows); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE name IN ('002_deployment_correlation.sql', '002_event_commit_message.sql', '003_pipeline_correlation_index.sql', '004_push_pipeline_correlation_index.sql', '005_forward_request.sql')`).Scan(&migrationRows); err != nil {
 		t.Fatal(err)
 	}
-	if existingEvents != 1 || migrationRows != 4 {
+	if existingEvents != 1 || migrationRows != 5 {
 		t.Fatalf("existing events/migration rows = %d/%d", existingEvents, migrationRows)
 	}
 }

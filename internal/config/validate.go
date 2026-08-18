@@ -164,19 +164,22 @@ func validateTargets(configured []Target, connections map[string]string) (map[st
 	locations := make(map[string]SourceLocation, len(configured))
 	known := make(map[string]struct{}, len(configured))
 	for index := range configured {
-		target := configured[index]
+		target := &configured[index]
 		if err := validateIdentifier("target", target.ID); err != nil {
 			return nil, err
 		}
 		if err := addUniqueLocation(locations, "target", target.ID, target.Location); err != nil {
 			return nil, err
 		}
-		connectionType, exists := connections[target.Connection]
-		if !exists {
-			return nil, fmt.Errorf("target %q references unknown connection %q", target.ID, target.Connection)
-		}
 		switch target.Type {
 		case "dokploy":
+			if target.URL != "" || target.Host != "" || target.AllowPrivateNetwork {
+				return nil, fmt.Errorf("unsupported Dokploy forwarding fields")
+			}
+			connectionType, exists := connections[target.Connection]
+			if !exists {
+				return nil, fmt.Errorf("target %q references unknown connection %q", target.ID, target.Connection)
+			}
 			if connectionType != "dokploy" {
 				return nil, fmt.Errorf("target %q references incompatible connection %q", target.ID, target.Connection)
 			}
@@ -187,6 +190,13 @@ func validateTargets(configured []Target, connections map[string]string) (map[st
 				return nil, err
 			}
 		case "http":
+			if target.URL != "" || target.Host != "" || target.AllowPrivateNetwork {
+				return nil, fmt.Errorf("unsupported HTTP forwarding fields")
+			}
+			connectionType, exists := connections[target.Connection]
+			if !exists {
+				return nil, fmt.Errorf("target %q references unknown connection %q", target.ID, target.Connection)
+			}
 			if connectionType != "http" {
 				return nil, fmt.Errorf("target %q references incompatible connection %q", target.ID, target.Connection)
 			}
@@ -217,6 +227,22 @@ func validateTargets(configured []Target, connections map[string]string) (map[st
 				if status < 200 || status >= 300 {
 					return nil, fmt.Errorf("invalid HTTP success status %d", status)
 				}
+			}
+		case "forward":
+			if target.Connection != "" {
+				return nil, fmt.Errorf("forward target %q must not reference a connection", target.ID)
+			}
+			if target.ResourceType != "" || target.ResourceID != "" || target.PollTimeout != nil || target.Method != "" || target.Path != "" || len(target.Query) != 0 || len(target.Headers) != 0 || target.Body != nil || len(target.SuccessStatuses) != 0 {
+				return nil, fmt.Errorf("unsupported forward request fields")
+			}
+			if err := validateForwardURL(target.URL, target.AllowPrivateNetwork); err != nil {
+				return nil, err
+			}
+			if target.Host == "" {
+				target.Host = "target"
+			}
+			if target.Host != "target" && target.Host != "origin" {
+				return nil, fmt.Errorf("unsupported forward host mode %q", target.Host)
 			}
 		default:
 			return nil, fmt.Errorf("unsupported target type %q", target.Type)
@@ -339,6 +365,17 @@ func validateHTTPURL(rawURL string, allowPrivateNetwork bool) error {
 	}
 	if !allowPrivateNetwork && unsafeHTTPHost(parsed.Hostname()) {
 		return fmt.Errorf("private HTTP URL requires allow_private_network")
+	}
+	return nil
+}
+
+func validateForwardURL(rawURL string, allowPrivateNetwork bool) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("invalid forward URL")
+	}
+	if !allowPrivateNetwork && unsafeHTTPHost(parsed.Hostname()) {
+		return fmt.Errorf("private forward URL requires allow_private_network")
 	}
 	return nil
 }

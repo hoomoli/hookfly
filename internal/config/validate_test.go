@@ -310,6 +310,36 @@ func TestValidateAndCanonicalizeRejectsUnsafeHTTPTargets(t *testing.T) {
 	}
 }
 
+func TestValidateAndCanonicalizeRejectsUnsafeForwardTargets(t *testing.T) {
+	// Break caught: allowing forwarding to unsafe URLs or accepting an ambiguous Host policy.
+	validForward := func() *Bundle {
+		bundle := validBundle()
+		bundle.Targets = []Target{{ID: "downstream", Type: "forward", URL: "https://receiver.example.invalid/hooks/gitlab"}}
+		bundle.Routes[0].Action.Targets = []string{"downstream"}
+		return bundle
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*Bundle)
+		want   string
+	}{
+		{name: "credentials", mutate: func(bundle *Bundle) { bundle.Targets[0].URL = "https://user@receiver.example.invalid/hook" }, want: "invalid forward URL"},
+		{name: "query", mutate: func(bundle *Bundle) { bundle.Targets[0].URL = "https://receiver.example.invalid/hook?override=true" }, want: "invalid forward URL"},
+		{name: "private network", mutate: func(bundle *Bundle) { bundle.Targets[0].URL = "http://127.0.0.1:8080/hook" }, want: "requires allow_private_network"},
+		{name: "host mode", mutate: func(bundle *Bundle) { bundle.Targets[0].Host = "incoming" }, want: "unsupported forward host mode"},
+		{name: "HTTP request fields", mutate: func(bundle *Bundle) { bundle.Targets[0].Method = "POST" }, want: "unsupported forward request fields"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bundle := validForward()
+			test.mutate(bundle)
+			err := ValidateAndCanonicalize(bundle)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("ValidateAndCanonicalize() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestValidateAndCanonicalizeSortsSemanticIDsAndRoutesByPrecedence(t *testing.T) {
 	bundle := validBundle()
 	bundle.GitLabSources = append(bundle.GitLabSources, GitLabSource{ID: "alpha", Token: "alpha-token", Repositories: []Repository{{ID: "z", Name: "z", ExternalID: "2"}, {ID: "a", Name: "a", ExternalID: "3"}}})

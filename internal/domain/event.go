@@ -53,6 +53,7 @@ type IngestCommand struct {
 	ConfigDigest   string
 	HeadersJSON    []byte
 	PayloadJSON    []byte
+	RequestJSON    []byte
 	Deliveries     []NewDelivery
 }
 

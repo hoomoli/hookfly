@@ -35,7 +35,7 @@ func TestPublicExamplesCompile(t *testing.T) {
 			name:        "routing example compiles all providers and deployment target types",
 			path:        filepath.Join(configRoot, "routing.example", "hookfly.yaml"),
 			wantSources: 3,
-			wantTargets: 2,
+			wantTargets: 3,
 			wantRoutes:  3,
 		},
 	} {

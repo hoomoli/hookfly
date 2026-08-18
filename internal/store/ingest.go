@@ -111,15 +111,15 @@ func eventInsertSQL(routingResult domain.RoutingResult) string {
 		return `INSERT INTO events (
 			id, provider, source_id, repository_id, delivery_id, received_at,
 			event, ref, status, revision, commit_message, external_id, trigger, routing_result,
-			rule_id, rule_snapshot, config_digest, raw_headers_json, raw_payload_json
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'deferred', NULL, NULL, ?, ?, ?)
+			rule_id, rule_snapshot, config_digest, raw_headers_json, raw_payload_json, forward_request_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'deferred', NULL, NULL, ?, ?, ?, ?)
 		ON CONFLICT(provider, source_id, delivery_id) DO NOTHING`
 	}
 	return `INSERT INTO events (
 		id, provider, source_id, repository_id, delivery_id, received_at,
 		event, ref, status, revision, commit_message, external_id, trigger, routing_result,
-		rule_id, rule_snapshot, config_digest, raw_headers_json, raw_payload_json
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		rule_id, rule_snapshot, config_digest, raw_headers_json, raw_payload_json, forward_request_json
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(provider, source_id, delivery_id) DO NOTHING`
 }
 
@@ -132,7 +132,7 @@ func eventInsertValues(eventID string, command domain.IngestCommand, persisted p
 		values = append(values, command.RoutingResult, nullableRouteString(command.RuleID), command.RuleSnapshot)
 	}
 	return append(values,
-		command.ConfigDigest, safeHeadersJSON(command.HeadersJSON), command.PayloadJSON,
+		command.ConfigDigest, safeHeadersJSON(command.HeadersJSON), command.PayloadJSON, command.RequestJSON,
 	)
 }
 

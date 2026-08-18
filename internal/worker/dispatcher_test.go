@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -184,6 +185,80 @@ func TestDispatchHTTPUncertainResultIsRetryableWithoutPolling(t *testing.T) {
 	}
 	if pollDue.Valid || deadline.Valid {
 		t.Fatalf("unexpected polling schedule = %#v/%#v", pollDue, deadline)
+	}
+}
+
+func TestDispatchForwardReplaysOriginalRequestAcrossRetry(t *testing.T) {
+	// Break caught: rebuilding from canonical fields, dropping credentials, or reading mutable request data on retry.
+	type received struct {
+		method, query, host, body string
+		headers                   http.Header
+	}
+	var requests []received
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requests = append(requests, received{method: r.Method, query: r.URL.RawQuery, host: r.Host, body: string(body), headers: r.Header.Clone()})
+		if len(requests) == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	s, db := openWorkerStore(t)
+	cfg := forwardDispatcherConfig(server.URL+"/receiver", "origin")
+	command := domain.IngestCommand{
+		DeliveryID: "forward-delivery", ReceivedAt: time.UnixMilli(1000),
+		CanonicalEvent: domain.CanonicalEvent{Provider: "gitlab", Source: "test", Repository: "repository", Event: "pipeline"},
+		RoutingResult:  domain.RoutingDeploy, Deliveries: workerDeliveries(t, cfg),
+		PayloadJSON: []byte(`{"ref":"main","unchanged":"a b"}`),
+		RequestJSON: []byte(`{"version":1,"method":"POST","host":"hookfly.example.invalid","raw_query":"token=a%2Bb&token=second","headers":{"Content-Type":["application/json"],"X-Gitlab-Token":["gitlab-secret"],"X-Hub-Signature-256":["sha256=signature"],"X-Repeated":["first","second"]}}`),
+	}
+	result, err := s.Ingest(context.Background(), command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAttempt := attemptForEvent(t, db, result.EventID)
+	dispatcher := NewDispatcher(workerManager(t, cfg, s), s, discardLogger(), func() time.Time { return time.UnixMilli(5000) })
+	if worked, err := dispatcher.RunOnce(context.Background()); err != nil || !worked {
+		t.Fatalf("first RunOnce() = %v/%v", worked, err)
+	}
+	assertWorkerAttemptState(t, db, firstAttempt, "failed", "not_started")
+
+	current, err := s.CurrentAttempt(context.Background(), deliveryForEvent(t, db, result.EventID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondAttempt, err := s.ApplyManualUpdate(context.Background(), store.ManualUpdate{
+		Expected: current, Create: true, Operation: domain.OperationRetry, ActorID: "operator", At: time.UnixMilli(6000),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if worked, err := dispatcher.RunOnce(context.Background()); err != nil || !worked {
+		t.Fatalf("retry RunOnce() = %v/%v", worked, err)
+	}
+	assertWorkerAttemptState(t, db, secondAttempt, "enqueued", "done")
+
+	if len(requests) != 2 || !reflect.DeepEqual(requests[0], requests[1]) {
+		t.Fatalf("forwarded requests = %#v", requests)
+	}
+	got := requests[0]
+	if got.method != http.MethodPost || got.query != "token=a%2Bb&token=second" || got.host != "hookfly.example.invalid" || got.body != string(command.PayloadJSON) {
+		t.Fatalf("forwarded request = %#v", got)
+	}
+	if got.headers.Get("X-Gitlab-Token") != "gitlab-secret" || got.headers.Get("X-Hub-Signature-256") != "sha256=signature" || !reflect.DeepEqual(got.headers.Values("X-Repeated"), []string{"first", "second"}) {
+		t.Fatalf("forwarded headers = %#v", got.headers)
+	}
+	var evidence []byte
+	if err := db.QueryRow(`SELECT request_json FROM delivery_attempts WHERE id = ?`, secondAttempt).Scan(&evidence); err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"gitlab-secret", "sha256=signature", "token=a%2Bb", `\"unchanged\"`} {
+		if bytes.Contains(evidence, []byte(forbidden)) {
+			t.Fatalf("request evidence exposed %q: %s", forbidden, evidence)
+		}
 	}
 }
 
@@ -696,6 +771,15 @@ func attemptForEvent(t *testing.T, db *sql.DB, eventID string) string {
 	return attemptID
 }
 
+func deliveryForEvent(t *testing.T, db *sql.DB, eventID string) string {
+	t.Helper()
+	var deliveryID string
+	if err := db.QueryRow(`SELECT id FROM deliveries WHERE event_id = ?`, eventID).Scan(&deliveryID); err != nil {
+		t.Fatal(err)
+	}
+	return deliveryID
+}
+
 func assertWorkerAttemptState(t *testing.T, db *sql.DB, attemptID, wantTransport, wantDeployment string) {
 	t.Helper()
 	var transport, deployment string
@@ -725,6 +809,13 @@ func httpDispatcherConfig(baseURL string) *config.Bundle {
 			ID: "production", Type: "http", Connection: "admin", Method: http.MethodPost, Path: "/api/deploy",
 			Body: &config.HTTPBody{Type: "json", Value: map[string]any{"attempt_id": "{{ attempt.id }}"}}, SuccessStatuses: []int{http.StatusAccepted},
 		}},
+	}
+}
+
+func forwardDispatcherConfig(targetURL, host string) *config.Bundle {
+	return &config.Bundle{
+		Global:  config.Global{Polling: config.Polling{Interval: config.Duration{Duration: 2 * time.Second}, Timeout: config.Duration{Duration: 30 * time.Second}}},
+		Targets: []config.Target{{ID: "production", Type: "forward", URL: targetURL, Host: host, AllowPrivateNetwork: true}},
 	}
 }
 

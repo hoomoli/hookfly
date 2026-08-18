@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -177,6 +178,9 @@ func TestProviderWebhookContracts(t *testing.T) {
 			if !json.Valid(command.HeadersJSON) || string(command.PayloadJSON) != test.body {
 				t.Fatalf("persisted request = headers %s, payload %s", command.HeadersJSON, command.PayloadJSON)
 			}
+			if len(command.RequestJSON) != 0 {
+				t.Fatalf("non-forward route retained private request: %s", command.RequestJSON)
+			}
 			if command.ConfigDigest == "" {
 				t.Fatal("config digest is empty")
 			}
@@ -226,6 +230,44 @@ func TestGitLabCommonEndpointSelectsSourceByToken(t *testing.T) {
 				t.Fatalf("canonical event = %#v", got)
 			}
 		})
+	}
+}
+
+func TestWebhookCapturesPrivateForwardEnvelopeWithoutChangingSafeHeaders(t *testing.T) {
+	// Break caught: discarding the original Host/query or persisting only adapter-selected safe headers for forwarding.
+	body := gitlabPipeline("7")
+	ingester := &recordingIngester{result: domain.IngestResult{EventID: "event"}}
+	handler := providerMux("gitlab", publichook.New("gitlab", forwardWebhookManager(t), ingester, time.Now))
+	request := httptest.NewRequest(http.MethodPost, "https://hookfly.example.invalid/hooks/gitlab?raw=a%2Bb&raw=second", strings.NewReader(body))
+	request.Header = gitlabHeaders("gitlab-token", "delivery")
+	request.Header.Add("X-Repeated", "first")
+	request.Header.Add("X-Repeated", "second")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	commands := ingester.directCommands()
+	if response.Code != http.StatusAccepted || len(commands) != 1 {
+		t.Fatalf("status/commands = %d/%d", response.Code, len(commands))
+	}
+	var envelope struct {
+		Version  int         `json:"version"`
+		Method   string      `json:"method"`
+		Host     string      `json:"host"`
+		RawQuery string      `json:"raw_query"`
+		Headers  http.Header `json:"headers"`
+	}
+	if err := json.Unmarshal(commands[0].RequestJSON, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Version != 1 || envelope.Method != http.MethodPost || envelope.Host != "hookfly.example.invalid" || envelope.RawQuery != "raw=a%2Bb&raw=second" {
+		t.Fatalf("forward envelope = %#v", envelope)
+	}
+	if envelope.Headers.Get("X-Gitlab-Token") != "gitlab-token" || !reflect.DeepEqual(envelope.Headers.Values("X-Repeated"), []string{"first", "second"}) {
+		t.Fatalf("forward headers = %#v", envelope.Headers)
+	}
+	if strings.Contains(string(commands[0].HeadersJSON), "gitlab-token") {
+		t.Fatalf("safe headers exposed token: %s", commands[0].HeadersJSON)
 	}
 }
 
@@ -699,6 +741,9 @@ func TestSupportedWebhookDefersDuringReloadButUnsupportedDoesNot(t *testing.T) {
 						len(direct) != 1 || direct[0].RoutingResult != domain.RoutingUnsupported || len(direct[0].Deliveries) != 0 {
 						t.Fatalf("direct/deferred = %#v/%#v", direct, deferred)
 					}
+					if len(deferred[0].RequestJSON) == 0 || len(direct[0].RequestJSON) != 0 {
+						t.Fatalf("private request retention = deferred:%d direct:%d", len(deferred[0].RequestJSON), len(direct[0].RequestJSON))
+					}
 				})
 			}
 		})
@@ -790,6 +835,25 @@ func webhookManager(t *testing.T) *runtimecfg.Manager {
 		},
 	}
 	generation, err := runtimecfg.Compile(bundle, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runtimecfg.NewManager(generation, nil, runtimecfg.Options{})
+}
+
+func forwardWebhookManager(t *testing.T) *runtimecfg.Manager {
+	t.Helper()
+	priority := 1
+	generation, err := runtimecfg.Compile(&config.Bundle{
+		Global:        config.Global{Kind: "Hookfly"},
+		GitLabSources: []config.GitLabSource{{ID: "gitlab-primary", Token: "gitlab-token", Repositories: []config.Repository{{ID: "application", ExternalID: "7"}}}},
+		Targets:       []config.Target{{ID: "downstream", Type: "forward", URL: "https://receiver.example.invalid/hooks/gitlab"}},
+		Routes: []config.Route{{
+			ID: "forward-gitlab", Priority: &priority,
+			Match:  config.RouteMatch{Source: "gitlab-primary", Repository: "application", Event: "pipeline"},
+			Action: config.Action{Type: "deploy", Targets: []string{"downstream"}},
+		}},
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

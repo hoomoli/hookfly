@@ -4,7 +4,7 @@ Hookfly receives GitLab, GitHub, and Harbor webhooks, records their routing hist
 
 ## Configure Hookfly
 
-`configs/hookfly.yaml` is an executable starter with no runtime resources. It is valid when `conf.d` is absent or empty. `configs/routing.example/` is the complete fake reference: GitLab, GitHub, and Harbor sources, a Dokploy Compose target, an HTTP management target, and three deploy routes.
+`configs/hookfly.yaml` is an executable starter with no runtime resources. It is valid when `conf.d` is absent or empty. `configs/routing.example/` is the complete fake reference: GitLab, GitHub, and Harbor sources, a Dokploy Compose target, an HTTP management target, a raw webhook forwarding target, and three deploy routes.
 
 The global file is always `hookfly.yaml`. Resource documents live only in direct, regular `conf.d/*.yaml` files. They merge as one configuration set: filenames have no precedence or ordering semantics. A candidate is rejected for duplicate IDs, unknown fields or kinds, invalid references, and equal-priority overlapping routes. The complete example uses distinct explicit route priorities.
 
@@ -82,6 +82,14 @@ Use `HTTPConnections` for one fixed HTTP(S) origin and typed authentication, the
 Each HTTP target may omit `query`, `headers`, and `body`. A body uses `type: json`, `type: form`, or `type: raw`; JSON and form bodies infer their standard content type, while `content_type` may override it or set it for raw content. Query and form values accept either one scalar or a sequence for repeated names. Non-secret headers, query values, and body values may interpolate normalized event fields and `{{ attempt.id }}`; they must not contain environment references. Hookfly sends the stable delivery ID as `Idempotency-Key`, so Retry reaches an idempotent management endpoint with the same key.
 
 Direct HTTP targets do not poll. A configured successful response status records the action as accepted, not as an observed deployment success. Connection errors and rejected HTTP responses offer Retry. A response that may have been lost is marked unknown and also offers Retry, but the remote action may already have run. HTTP targets reject redirects and do not permit a target to select a different host, arbitrary authentication header, or arbitrary template expression.
+
+## Configure raw webhook forwarding
+
+Use `ForwardTargets` when a matched GitLab, GitHub, or Harbor webhook must be replayed to another HTTP(S) URL instead of being rebuilt from normalized fields. A forwarding target preserves the inbound method, raw query, body bytes, and all end-to-end header values, including provider authentication and signature headers. Protocol hop-by-hop headers are removed because they describe the connection to Hookfly rather than the downstream connection.
+
+Set `url` to the complete downstream endpoint. The URL must not contain credentials, a query, or a fragment; the inbound raw query is retained. `host` defaults to `target`, which sends the destination URL's Host. Set `host: origin` to retain the Host received by Hookfly. The inbound `Origin` header, when present, is retained in both modes. Private, loopback, and link-local destinations require `allow_private_network: true`.
+
+Forwarding uses the same durable attempt lifecycle as direct HTTP targets. Hookfly stores the private request envelope required for asynchronous delivery and Retry, but does not expose its sensitive headers or raw query through management event details, logs, or request evidence. Redirects are rejected. Any 2xx response records the action as accepted; failures and unknown outcomes offer Retry.
 
 ## Reload and deployment boundaries
 
