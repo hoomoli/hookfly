@@ -29,8 +29,8 @@ generated=$(git ls-files | grep -E '(^|/)(node_modules|dist|bin|obj|coverage|tes
 floating_actions=$(grep -nE '^[[:space:]]*- uses:' .github/workflows/*.yml | grep -Ev '@[0-9a-f]{40}([[:space:]]+#.*)?$' || true)
 [ -z "$floating_actions" ] || fail "GitHub Actions must use full commit SHAs:\n$floating_actions"
 
-unpinned_images=$(awk '$1 == "FROM" && $2 != "scratch" && $2 !~ /@sha256:[0-9a-f]{64}$/ { print FILENAME ":" FNR ":" $0 }' Dockerfile.backend web/Dockerfile)
-[ -z "$unpinned_images" ] || fail "Docker base images must use sha256 digests:\n$unpinned_images"
+untagged_images=$(awk '$1 == "FROM" && $2 != "scratch" && ($2 !~ /:[^\/]+$/ || $2 ~ /@/) { print FILENAME ":" FNR ":" $0 }' Dockerfile.backend web/Dockerfile)
+[ -z "$untagged_images" ] || fail "Docker base images must use tags without digests:\n$untagged_images"
 
 if grep -Eq 'Preact|HOOKFLY_WIREGUARD_IP' README.md deploy/compose.example.yaml .env.example; then
   fail "Public documentation contains stale implementation or binding names."

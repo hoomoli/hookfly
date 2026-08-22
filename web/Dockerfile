@@ -1,4 +1,4 @@
-FROM node:26-alpine@sha256:aadf416b2cdce311a8811ba3f0608a61b77dbf997500e2eafe781b51f6a0b019 AS build
+FROM node:26-alpine AS build
 
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -8,7 +8,11 @@ COPY public ./public
 COPY src ./src
 RUN npm run build
 
-FROM nginxinc/nginx-unprivileged:alpine@sha256:26b0bf6fbf07297983cb341998d79c831508787de26627dd2a112321b9c3a4af
+FROM nginxinc/nginx-unprivileged:alpine
+
+USER root
+RUN apk upgrade --no-cache
+USER 101
 
 ENV HOOKFLY_ADMIN_UPSTREAM="" \
     HOOKFLY_SITE_NAME="Hookfly" \
