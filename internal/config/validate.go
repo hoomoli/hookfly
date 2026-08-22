@@ -30,6 +30,9 @@ func ValidateAndCanonicalize(bundle *Bundle) error {
 		return fmt.Errorf("configuration bundle is required")
 	}
 
+	if err := validateSSHTunnels(bundle); err != nil {
+		return err
+	}
 	repositories, err := validateSources(bundle)
 	if err != nil {
 		return err

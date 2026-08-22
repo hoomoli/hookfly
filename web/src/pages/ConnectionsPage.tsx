@@ -177,6 +177,7 @@ export function ConnectionsPage({ globalActions }: { globalActions?: ReactNode }
                       <span className="min-w-0">
                         <strong className="block truncate">{connection.id}</strong>
                         <small className="block truncate text-muted-foreground">{connection.type}</small>
+                        {connection.ssh_tunnel && <small className="block truncate text-muted-foreground">{t("connections.sshTunnel", { id: connection.ssh_tunnel })}</small>}
                         <small className="block truncate text-muted-foreground/80">
                           {t("connections.capabilities")}: {connection.capabilities.length > 0
                             ? connection.capabilities.map((capability) => capability === "resource_discovery" ? t("connections.resourceDiscovery") : capability).join(", ")

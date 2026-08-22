@@ -219,3 +219,11 @@ it.each([
   expect(document.querySelector("textarea[data-hookfly-clipboard]")).toBeNull();
   expect(removeAllRanges).toHaveBeenCalled();
 });
+
+it("shows the configured SSH tunnel reference", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => json({ connections: [
+    { id: "internal", type: "http", status: "configured", capabilities: [], ssh_tunnel: "jump" },
+  ] })));
+  render(<ConnectionsPage />);
+  expect(await screen.findByText("SSH tunnel: jump")).toBeInTheDocument();
+});

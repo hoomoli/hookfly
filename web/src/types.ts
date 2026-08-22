@@ -65,6 +65,7 @@ export interface Repository {
 }
 
 export interface ConnectionSummary {
+  ssh_tunnel?: string;
   id: string;
   type: string;
   status: string;

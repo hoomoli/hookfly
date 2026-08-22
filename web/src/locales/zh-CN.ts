@@ -41,6 +41,7 @@ export const zhCN = {
       targets: "目标",
     },
     connections: {
+    sshTunnel: "SSH 隧道：{{id}}",
       eyebrow: "{{siteName}} / 配置",
       heading: "连接",
       readOnly: "只读配置视图",

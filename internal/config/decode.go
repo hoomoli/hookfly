@@ -108,6 +108,18 @@ func decodeResource(bundle *Bundle, source SourceFile, lookup EnvLookup) error {
 		}
 		bundle.DokployConnections = append(bundle.DokployConnections, document.Connections...)
 		bundle.Targets = append(bundle.Targets, document.Targets...)
+	case "SSHTunnels":
+		var document struct {
+			Kind    string      `yaml:"kind"`
+			Tunnels []SSHTunnel `yaml:"tunnels"`
+		}
+		if err := decodeStrict(node, &document); err != nil {
+			return strictSourceDecodeError(source)
+		}
+		for index := range document.Tunnels {
+			document.Tunnels[index].Location = SourceLocation{Path: source.Path, Field: "tunnels"}
+		}
+		bundle.SSHTunnels = append(bundle.SSHTunnels, document.Tunnels...)
 	case "HTTPConnections":
 		var document httpConnectionsDocument
 		if err := decodeStrict(node, &document); err != nil {
@@ -253,7 +265,7 @@ func secretEnvironmentPath(path []string) bool {
 		return false
 	}
 	switch path[len(path)-1] {
-	case "token", "secret", "authorization", "api_key":
+	case "token", "secret", "authorization", "api_key", "private_key_passphrase":
 		return true
 	case "value":
 		return len(path) >= 2 && path[len(path)-2] == "auth"

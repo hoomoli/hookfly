@@ -33,14 +33,16 @@ type Polling struct {
 }
 
 type DokployConnection struct {
-	ID       string         `yaml:"id"`
-	BaseURL  string         `yaml:"base_url"`
-	APIKey   string         `yaml:"api_key" secret:"true"`
-	Location SourceLocation `yaml:"-"`
+	SSHTunnel string         `yaml:"ssh_tunnel"`
+	ID        string         `yaml:"id"`
+	BaseURL   string         `yaml:"base_url"`
+	APIKey    string         `yaml:"api_key" secret:"true"`
+	Location  SourceLocation `yaml:"-"`
 }
 
 // HTTPConnection is one startup-configured origin and authentication credential.
 type HTTPConnection struct {
+	SSHTunnel           string             `yaml:"ssh_tunnel"`
 	ID                  string             `yaml:"id"`
 	BaseURL             string             `yaml:"base_url"`
 	AllowPrivateNetwork bool               `yaml:"allow_private_network"`
@@ -128,6 +130,7 @@ func (body *HTTPBody) UnmarshalYAML(node *yaml.Node) error {
 }
 
 type Target struct {
+	SSHTunnel           string                    `yaml:"ssh_tunnel"`
 	ID                  string                    `yaml:"id"`
 	Type                string                    `yaml:"type"`
 	Connection          string                    `yaml:"connection"`
@@ -225,6 +228,7 @@ type Route struct {
 
 // Bundle is the decoded configuration set.
 type Bundle struct {
+	SSHTunnels         []SSHTunnel
 	Global             Global
 	GitLabSources      []GitLabSource
 	GitHubSources      []GitHubSource
@@ -250,4 +254,17 @@ type RouteMatch struct {
 type Action struct {
 	Type    string   `yaml:"type"`
 	Targets []string `yaml:"targets"`
+}
+
+// SSHTunnel configures an SSH jump host for HTTP destinations.
+type SSHTunnel struct {
+	ID                   string         `yaml:"id"`
+	Host                 string         `yaml:"host"`
+	Port                 int            `yaml:"port"`
+	User                 string         `yaml:"user"`
+	PrivateKeyFile       string         `yaml:"private_key_file"`
+	PrivateKeyPassphrase string         `yaml:"private_key_passphrase" secret:"true"`
+	KnownHostsFile       string         `yaml:"known_hosts_file"`
+	HostKeyPolicy        string         `yaml:"host_key_policy"`
+	Location             SourceLocation `yaml:"-"`
 }

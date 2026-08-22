@@ -20,6 +20,7 @@ import (
 	"github.com/hoomoli/hookfly/internal/harbor"
 	"github.com/hoomoli/hookfly/internal/httptarget"
 	"github.com/hoomoli/hookfly/internal/provider"
+	"github.com/hoomoli/hookfly/internal/sshtunnel"
 	"github.com/hoomoli/hookfly/internal/store"
 )
 
@@ -28,6 +29,7 @@ const bindingVersion = 2
 // Target is the immutable executable projection of one configured deployment target.
 type Target struct {
 	ID             string
+	SSHTunnel      string
 	ConnectionID   string
 	ResourceType   string
 	ComposeID      string
@@ -143,6 +145,20 @@ func compileBundle(bundle *config.Bundle, logger *slog.Logger) (*Generation, err
 		gitLabSources:    make(map[[sha256.Size]byte]*Source, len(candidate.GitLabSources)),
 		repositoryLimits: make(map[store.RepositoryKey]int), routes: append([]config.Route(nil), candidate.Routes...),
 	}
+	tunnels := make(map[string]*sshtunnel.Tunnel, len(candidate.SSHTunnels))
+	for _, configured := range candidate.SSHTunnels {
+		tunnel, err := sshtunnel.New(configured)
+		if err != nil {
+			return nil, fmt.Errorf("compile SSH tunnel %q: %w", configured.ID, err)
+		}
+		tunnels[configured.ID] = tunnel
+	}
+	clientFor := func(id, destination string) (*http.Client, error) {
+		if id == "" {
+			return http.DefaultClient, nil
+		}
+		return tunnels[id].HTTPClient(destination)
+	}
 	for index := range candidate.DokployConnections {
 		canonical, err := dokploy.CanonicalBaseURL(candidate.DokployConnections[index].BaseURL)
 		if err != nil {
@@ -150,12 +166,16 @@ func compileBundle(bundle *config.Bundle, logger *slog.Logger) (*Generation, err
 		}
 		candidate.DokployConnections[index].BaseURL = canonical
 		configuredDokployConnections[candidate.DokployConnections[index].ID] = candidate.DokployConnections[index]
-		client, err := dokploy.NewClient(canonical, candidate.DokployConnections[index].APIKey, http.DefaultClient, logger)
+		httpClient, err := clientFor(candidate.DokployConnections[index].SSHTunnel, canonical)
+		if err != nil {
+			return nil, err
+		}
+		client, err := dokploy.NewClient(canonical, candidate.DokployConnections[index].APIKey, httpClient, logger)
 		if err != nil {
 			return nil, fmt.Errorf("compile Dokploy connection: %w", err)
 		}
 		generation.connections[candidate.DokployConnections[index].ID] = &connection{
-			id: candidate.DokployConnections[index].ID, kind: ConnectionTypeDokploy, baseURL: canonical, client: client,
+			sshTunnel: candidate.DokployConnections[index].SSHTunnel, id: candidate.DokployConnections[index].ID, kind: ConnectionTypeDokploy, baseURL: canonical, client: client,
 		}
 	}
 	for index := range candidate.HTTPConnections {
@@ -166,11 +186,15 @@ func compileBundle(bundle *config.Bundle, logger *slog.Logger) (*Generation, err
 		candidate.HTTPConnections[index].BaseURL = canonical
 		configuredHTTPConnections[candidate.HTTPConnections[index].ID] = candidate.HTTPConnections[index]
 		auth := httptarget.Authentication{Type: candidate.HTTPConnections[index].Auth.Type, Value: candidate.HTTPConnections[index].Auth.Value, Header: candidate.HTTPConnections[index].Auth.Header}
-		client, err := httptarget.NewAuthenticatedClient(canonical, auth, candidate.HTTPConnections[index].AllowPrivateNetwork, http.DefaultClient)
+		httpClient, err := clientFor(candidate.HTTPConnections[index].SSHTunnel, canonical)
+		if err != nil {
+			return nil, err
+		}
+		client, err := httptarget.NewAuthenticatedClient(canonical, auth, candidate.HTTPConnections[index].AllowPrivateNetwork, httpClient)
 		if err != nil {
 			return nil, fmt.Errorf("compile HTTP connection: %w", err)
 		}
-		generation.connections[candidate.HTTPConnections[index].ID] = &connection{id: candidate.HTTPConnections[index].ID, kind: ConnectionTypeHTTP, baseURL: canonical, httpClient: client}
+		generation.connections[candidate.HTTPConnections[index].ID] = &connection{sshTunnel: candidate.HTTPConnections[index].SSHTunnel, id: candidate.HTTPConnections[index].ID, kind: ConnectionTypeHTTP, baseURL: canonical, httpClient: client}
 	}
 	for _, configured := range candidate.GitLabSources {
 		source := generation.addSource("gitlab", configured.ID, gitlab.New(configured.Token), configured.Repositories)
@@ -190,10 +214,7 @@ func compileBundle(bundle *config.Bundle, logger *slog.Logger) (*Generation, err
 		switch configured.Type {
 		case "dokploy":
 			connection := configuredDokployConnections[configured.Connection]
-			client, err := dokploy.NewClient(connection.BaseURL, connection.APIKey, http.DefaultClient, logger)
-			if err != nil {
-				return nil, fmt.Errorf("compile Dokploy target: %w", err)
-			}
+			client := generation.connections[configured.Connection].client
 			snapshot, err := json.Marshal(targetSnapshot{BindingVersion: bindingVersion, ID: configured.ID, Type: configured.Type, ResourceType: configured.ResourceType, ResourceID: configured.ResourceID, Connection: connectionSnapshot{ID: connection.ID, BaseURL: connection.BaseURL}})
 			if err != nil {
 				return nil, fmt.Errorf("encode target binding: %w", err)
@@ -201,11 +222,7 @@ func compileBundle(bundle *config.Bundle, logger *slog.Logger) (*Generation, err
 			generation.targets[configured.ID] = &Target{ID: configured.ID, Type: configured.Type, ConnectionID: configured.Connection, ResourceType: configured.ResourceType, ComposeID: configured.ResourceID, Client: client, PollInterval: interval, PollTimeout: targetTimeout, Snapshot: snapshot, BindingVersion: bindingVersion, Fingerprint: bindingFingerprint(bindingVersion, configured.Type, configured.ResourceType, connection.BaseURL, configured.ResourceID)}
 		case "http":
 			connection := configuredHTTPConnections[configured.Connection]
-			auth := httptarget.Authentication{Type: connection.Auth.Type, Value: connection.Auth.Value, Header: connection.Auth.Header}
-			client, err := httptarget.NewAuthenticatedClient(connection.BaseURL, auth, connection.AllowPrivateNetwork, http.DefaultClient)
-			if err != nil {
-				return nil, fmt.Errorf("compile HTTP target: %w", err)
-			}
+			client := generation.connections[configured.Connection].httpClient
 			httpRequest := httptarget.Request{Method: configured.Method, Path: configured.Path, Query: cloneHTTPQuery(configured.Query), Headers: cloneStringMap(configured.Headers), Body: compileHTTPBody(configured.Body), SuccessStatuses: append([]int(nil), configured.SuccessStatuses...)}
 			httpSnapshot := httpTargetSnapshot{Method: httpRequest.Method, Path: httpRequest.Path, Query: httpRequest.Query, Headers: httpRequest.Headers, Body: newHTTPBodySnapshot(httpRequest.Body), SuccessStatuses: httpRequest.SuccessStatuses}
 			snapshot, err := json.Marshal(targetSnapshot{BindingVersion: bindingVersion, ID: configured.ID, Type: configured.Type, Connection: connectionSnapshot{ID: connection.ID, BaseURL: connection.BaseURL}, HTTP: &httpSnapshot})
@@ -218,7 +235,11 @@ func compileBundle(bundle *config.Bundle, logger *slog.Logger) (*Generation, err
 			if err != nil {
 				return nil, fmt.Errorf("compile forward target: %w", err)
 			}
-			client, err := httptarget.NewForwardClient(canonical, configured.Host, configured.AllowPrivateNetwork, http.DefaultClient)
+			httpClient, err := clientFor(configured.SSHTunnel, canonical)
+			if err != nil {
+				return nil, err
+			}
+			client, err := httptarget.NewForwardClient(canonical, configured.Host, configured.AllowPrivateNetwork, httpClient)
 			if err != nil {
 				return nil, fmt.Errorf("compile forward target: %w", err)
 			}
@@ -229,6 +250,28 @@ func compileBundle(bundle *config.Bundle, logger *slog.Logger) (*Generation, err
 			}
 			generation.targets[configured.ID] = &Target{ID: configured.ID, Type: configured.Type, Forward: &ForwardExecutable{Client: client}, PollInterval: interval, PollTimeout: targetTimeout, Snapshot: snapshot, BindingVersion: bindingVersion, Fingerprint: forwardBindingFingerprint(bindingVersion, forwardSnapshot)}
 		}
+	}
+	for _, configured := range candidate.Targets {
+		id := configured.SSHTunnel
+		if configured.Type == "http" {
+			id = configuredHTTPConnections[configured.Connection].SSHTunnel
+		}
+		if configured.Type == "dokploy" {
+			id = configuredDokployConnections[configured.Connection].SSHTunnel
+		}
+		if id == "" {
+			continue
+		}
+		identity := tunnelIdentity(candidate, id)
+		target := generation.targets[configured.ID]
+		target.SSHTunnel = id
+		var snapshot targetSnapshot
+		if err := json.Unmarshal(target.Snapshot, &snapshot); err != nil {
+			return nil, err
+		}
+		snapshot.SSH = identity
+		target.Snapshot, _ = json.Marshal(snapshot)
+		target.Fingerprint = tunnelBindingFingerprint(target.Fingerprint, identity)
 	}
 	generation.digest = bundleDigest(candidate)
 	return generation, nil
@@ -274,6 +317,7 @@ func pollingSettings(polling config.Polling) (time.Duration, time.Duration) {
 
 func cloneBundle(bundle *config.Bundle) *config.Bundle {
 	copyBundle := *bundle
+	copyBundle.SSHTunnels = append([]config.SSHTunnel(nil), bundle.SSHTunnels...)
 	copyBundle.GitLabSources = append([]config.GitLabSource(nil), bundle.GitLabSources...)
 	copyBundle.GitHubSources = append([]config.GitHubSource(nil), bundle.GitHubSources...)
 	copyBundle.HarborSources = append([]config.HarborSource(nil), bundle.HarborSources...)
@@ -593,6 +637,7 @@ func matchesOptional(expected *string, actual string) bool {
 }
 
 type targetSnapshot struct {
+	SSH            *sshSnapshot           `json:"ssh,omitempty"`
 	BindingVersion int                    `json:"binding_version"`
 	ID             string                 `json:"id"`
 	Type           string                 `json:"type"`
@@ -710,11 +755,13 @@ func bundleDigest(bundle *config.Bundle) string {
 		Repositories []digestRepository `json:"repositories"`
 	}
 	type digestConnection struct {
-		Type    string `json:"type"`
-		ID      string `json:"id"`
-		BaseURL string `json:"base_url"`
+		SSHTunnel string `json:"ssh_tunnel,omitempty"`
+		Type      string `json:"type"`
+		ID        string `json:"id"`
+		BaseURL   string `json:"base_url"`
 	}
 	type digestTarget struct {
+		SSHTunnel           string                           `json:"ssh_tunnel,omitempty"`
 		ID                  string                           `json:"id"`
 		Type                string                           `json:"type"`
 		Connection          string                           `json:"connection"`
@@ -738,6 +785,7 @@ func bundleDigest(bundle *config.Bundle) string {
 		Action   config.Action     `json:"action"`
 	}
 	safe := struct {
+		SSHTunnels             []sshDigest        `json:"ssh_tunnels,omitempty"`
 		Kind                   string             `json:"kind"`
 		ConfigDir              string             `json:"config_dir"`
 		GlobalLimit            int                `json:"global_limit"`
@@ -776,20 +824,23 @@ func bundleDigest(bundle *config.Bundle) string {
 		return safe.Sources[left].ID < safe.Sources[right].ID
 	})
 	for _, connection := range bundle.DokployConnections {
-		safe.Connections = append(safe.Connections, digestConnection{Type: "dokploy", ID: connection.ID, BaseURL: connection.BaseURL})
+		safe.Connections = append(safe.Connections, digestConnection{Type: "dokploy", ID: connection.ID, BaseURL: connection.BaseURL, SSHTunnel: connection.SSHTunnel})
 	}
 	for _, connection := range bundle.HTTPConnections {
-		safe.Connections = append(safe.Connections, digestConnection{Type: "http", ID: connection.ID, BaseURL: connection.BaseURL})
+		safe.Connections = append(safe.Connections, digestConnection{Type: "http", ID: connection.ID, BaseURL: connection.BaseURL, SSHTunnel: connection.SSHTunnel})
 	}
 	for _, target := range bundle.Targets {
 		pollTimeout := ""
 		if target.PollTimeout != nil {
 			pollTimeout = target.PollTimeout.Duration.String()
 		}
-		safe.Targets = append(safe.Targets, digestTarget{ID: target.ID, Type: target.Type, Connection: target.Connection, ResourceType: target.ResourceType, ResourceID: target.ResourceID, PollTimeout: pollTimeout, Method: target.Method, Path: target.Path, Query: cloneConfigHTTPQuery(target.Query), Headers: cloneStringMap(target.Headers), Body: cloneConfigHTTPBody(target.Body), SuccessStatuses: append([]int(nil), target.SuccessStatuses...), URL: target.URL, Host: target.Host, AllowPrivateNetwork: target.AllowPrivateNetwork})
+		safe.Targets = append(safe.Targets, digestTarget{SSHTunnel: target.SSHTunnel, ID: target.ID, Type: target.Type, Connection: target.Connection, ResourceType: target.ResourceType, ResourceID: target.ResourceID, PollTimeout: pollTimeout, Method: target.Method, Path: target.Path, Query: cloneConfigHTTPQuery(target.Query), Headers: cloneStringMap(target.Headers), Body: cloneConfigHTTPBody(target.Body), SuccessStatuses: append([]int(nil), target.SuccessStatuses...), URL: target.URL, Host: target.Host, AllowPrivateNetwork: target.AllowPrivateNetwork})
 	}
 	for _, route := range bundle.Routes {
 		safe.Routes = append(safe.Routes, digestRoute{ID: route.ID, Priority: *route.Priority, Match: route.Match, Action: route.Action})
+	}
+	for _, t := range bundle.SSHTunnels {
+		safe.SSHTunnels = append(safe.SSHTunnels, sshDigest{Identity: *tunnelIdentity(bundle, t.ID), PrivateKeyFile: t.PrivateKeyFile, KnownHostsFile: t.KnownHostsFile, Policy: t.HostKeyPolicy})
 	}
 	data, _ := json.Marshal(safe)
 	hash := sha256.Sum256(data)

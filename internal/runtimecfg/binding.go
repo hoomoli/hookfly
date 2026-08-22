@@ -79,6 +79,7 @@ func (g *Generation) ResolveTarget(targetID string, snapshot []byte) (*Target, B
 	default:
 		return nil, BindingUnavailable
 	}
+	fingerprint = tunnelBindingFingerprint(fingerprint, historical.SSH)
 	if fingerprint != current.Fingerprint {
 		return nil, BindingChanged
 	}

@@ -41,6 +41,7 @@ export const en = {
       targets: "Targets",
     },
     connections: {
+    sshTunnel: "SSH tunnel: {{id}}",
       eyebrow: "{{siteName}} / CONFIGURATION",
       heading: "Connections",
       readOnly: "Read-only configuration view",

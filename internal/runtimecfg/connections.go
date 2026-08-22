@@ -23,6 +23,7 @@ var (
 
 // ConnectionSummary is the secret-free management projection of one configured connection.
 type ConnectionSummary struct {
+	SSHTunnel    string   `json:"ssh_tunnel,omitempty"`
 	ID           string   `json:"id"`
 	Type         string   `json:"type"`
 	Status       string   `json:"status"`
@@ -55,6 +56,7 @@ func (c *connection) discoverComposeAppName(ctx context.Context, composeID strin
 }
 
 type connection struct {
+	sshTunnel  string
 	id         string
 	kind       string
 	baseURL    string
@@ -68,7 +70,7 @@ func (c *connection) summary() ConnectionSummary {
 		capabilities = append(capabilities, ConnectionCapabilityResourceDiscovery)
 	}
 	return ConnectionSummary{
-		ID: c.id, Type: c.kind, Status: ConnectionStatusConfigured,
+		SSHTunnel: c.sshTunnel, ID: c.id, Type: c.kind, Status: ConnectionStatusConfigured,
 		Capabilities: capabilities,
 	}
 }

@@ -91,6 +91,74 @@ Set `url` to the complete downstream endpoint. The URL must not contain credenti
 
 Forwarding uses the same durable attempt lifecycle as direct HTTP targets. Hookfly stores the private request envelope required for asynchronous delivery and Retry, but does not expose its sensitive headers or raw query through management event details, logs, or request evidence. Redirects are rejected. Any 2xx response records the action as accepted; failures and unknown outcomes offer Retry.
 
+## Reach HTTP services through SSH
+
+Configure an SSH tunnel when Hookfly must reach an HTTP(S) destination through a jump host. Route matching and target types stay the same. Hookfly uses private-key authentication and `accept_new` host verification: the first observed host public key is durably recorded, matching keys are accepted, and changed or revoked keys are rejected. Initial trust depends on the first connection reaching the intended host. There is no insecure mode or automatic host-key replacement.
+
+Add a resource file such as `conf.d/ssh.yaml`:
+
+```yaml
+kind: SSHTunnels
+tunnels:
+  - id: internal
+    host: bastion.example.invalid
+    port: 22
+    user: hookfly
+    private_key_file: /run/secrets/ssh_private_key
+    known_hosts_file: /var/lib/hookfly/ssh/known_hosts
+    host_key_policy: accept_new
+```
+
+`port` defaults to 22 and `host_key_policy` defaults to `accept_new`. Both file paths must be absolute and distinct. For an encrypted private key, add `private_key_passphrase: ${SSH_KEY_PASSPHRASE}` and inject that protected environment variable into the backend. Keep the private key outside the repository and mount it read-only. Install its corresponding login public key in the jump user's `authorized_keys`; the SSH server must allow local TCP forwarding to the intended destination (for example, a restricted `PermitOpen` rule).
+
+Reference the tunnel from an HTTP connection:
+
+```yaml
+kind: HTTPConnections
+connections:
+  - id: internal-api
+    base_url: https://service.example.invalid
+    ssh_tunnel: internal
+    allow_private_network: true
+    auth:
+      type: bearer
+      value: ${INTERNAL_API_TOKEN}
+```
+
+HTTP targets then reference `internal-api` normally. A Dokploy connection in a `DokployTargets` document also accepts `ssh_tunnel: internal`; all of its discovery, deploy, and polling requests use that tunnel. For raw forwarding, set the reference directly on the target:
+
+```yaml
+kind: ForwardTargets
+targets:
+  - id: internal-webhook
+    type: forward
+    url: http://receiver.example.invalid/hooks/gitlab
+    ssh_tunnel: internal
+    allow_private_network: true
+```
+
+Destination names resolve on the jump host, and a destination of `127.0.0.1` refers to that host. Tunneled HTTP connections and forwarding targets require explicit `allow_private_network: true`, because Hookfly cannot apply its local DNS address filter to names resolved remotely. Destinations are fixed by configuration, never selected by webhook input. HTTPS retains certificate verification and SNI for the destination name; HTTP Host and forwarding header behavior are unchanged. Environment HTTP proxies are not used for tunneled traffic, and failed tunnels never fall back to direct access.
+
+For the example Compose deployment, add this backend mount in a local override and inject any required authentication environment variables:
+
+```yaml
+services:
+  backend:
+    volumes:
+      - type: bind
+        source: ./secrets/ssh_private_key
+        target: /run/secrets/ssh_private_key
+        read_only: true
+        bind:
+          create_host_path: false
+```
+
+The backend runs as UID/GID `65532:65532`. Give that user read access to the private key and write access to the trust directory. The existing `hookfly-data` volume persists `/var/lib/hookfly`, so the example trust file survives container replacement. New trust directories use mode `0700`; new trust files use `0600`. Concurrent first-use writes are locked and atomic; use a local filesystem with working advisory locks and atomic rename. A corrupt or unwritable trust file fails closed. Do not delete the data volume to resolve a trust error: that also discards the remembered host identities and application history.
+
+After an intentional jump-host key change, stop the backend, independently verify the replacement key, and update only that host's entry in the persistent `known_hosts` file using OpenSSH tools from an administrative environment. Entries on non-default ports use `[hostname]:port`. Restart the backend after maintenance. To rotate a login private key, replace the mounted key file and reload configuration; existing requests retain their compiled credentials while subsequent requests use the replacement. Recreate the backend when changing an environment-based passphrase.
+
+Each tunneled HTTP request opens its own SSH connection and closes it when the response is consumed, closed, or cancelled. This adds a handshake per request but keeps requests independent across configuration reloads. There is no automatic replay after a possibly delivered request. Changing the jump host, port, user, tunnel reference, or direct/tunneled mode changes the durable target binding, preventing historical retries from silently using a different route.
+
 ## Reload and deployment boundaries
 
 Hookfly compiles one immutable configuration candidate from `hookfly.yaml` and its discovered `conf.d` files. Sources, routes, and targets publish together as one complete generation, so a request cannot observe a mixed old/new configuration; failed candidates preserve the current generation. Use **Reload configuration** in the management UI or `POST /api/v1/config/reload` after editing the mounted directory; the backend does not restart. Invalid candidates are not applied, existing deployments finish on the old generation, and webhooks accepted while a successful reload waits or drains are durably deferred before FIFO routing against the new generation. Editing a host `.env` does not rotate credentials through reload; recreate the backend after changing a secret.
