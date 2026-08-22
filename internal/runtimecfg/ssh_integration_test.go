@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -212,5 +213,34 @@ func TestSSHOldDiscoveryCompletesAfterGenerationReplacement(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("old discovery interrupted or leaked")
+	}
+}
+
+func TestSSHManagementCheckVerifiesForwardingWithoutDeploy(t *testing.T) {
+	b := sshBundle(t)
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1) }))
+	defer upstream.Close()
+	address := startRuntimeJump(t, b.SSHTunnels[0].PrivateKeyFile, strings.TrimPrefix(upstream.URL, "http://"))
+	host, port, _ := net.SplitHostPort(address)
+	b.SSHTunnels[0].Host = host
+	b.SSHTunnels[0].Port, _ = strconv.Atoi(port)
+	g, err := Compile(b, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(g, nil, Options{})
+	result, err := m.CheckSSHTunnel(context.Background(), "jump")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "connected" || result.CheckedAt == nil || result.LatencyMS <= 0 || result.DestinationCount == 0 {
+		t.Fatalf("check result %#v", result)
+	}
+	if calls.Load() != 0 {
+		t.Fatal("check dispatched an HTTP or deployment request")
+	}
+	if m.SSHTunnels()[0].Status != "connected" {
+		t.Fatal("check result was not retained")
 	}
 }

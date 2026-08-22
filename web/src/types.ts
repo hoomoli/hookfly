@@ -247,3 +247,15 @@ export interface AuthSession {
   };
   expires_at?: string;
 }
+
+export interface SSHTunnelSummary {
+  id: string;
+  host?: string;
+  port?: number;
+  user?: string;
+  status: string;
+  error?: string;
+  latency_ms?: number;
+  checked_at?: string;
+  destination_count: number;
+}

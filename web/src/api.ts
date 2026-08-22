@@ -120,3 +120,12 @@ export function createAttempt(deliveryID: string, body: ManualAttemptRequest): P
     body: JSON.stringify(body),
   });
 }
+
+export async function listSSHTunnels(signal?: AbortSignal): Promise<import("./types").SSHTunnelSummary[]> {
+  const response = await request<{ tunnels: import("./types").SSHTunnelSummary[] }>("/api/v1/ssh-tunnels", { signal });
+  return response.tunnels;
+}
+
+export function checkSSHTunnel(id: string, signal?: AbortSignal): Promise<import("./types").SSHTunnelSummary> {
+  return request(`/api/v1/ssh-tunnels/${encodeURIComponent(id)}/check`, { method: "POST", signal });
+}

@@ -81,8 +81,12 @@ func TestSSHTunnelBindingAndSafeSummary(t *testing.T) {
 func TestSSHCompileRejectsUnreadableKey(t *testing.T) {
 	bundle := sshBundle(t)
 	bundle.SSHTunnels[0].PrivateKeyFile = "/not-present/key"
-	if _, err := Compile(bundle, nil); err == nil {
-		t.Fatal("accepted unreadable SSH key")
+	g, err := Compile(bundle, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.SSHTunnels()[0].Status != "configuration_error" {
+		t.Fatal("missing key diagnostic")
 	}
 }
 

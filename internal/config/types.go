@@ -258,6 +258,7 @@ type Action struct {
 
 // SSHTunnel configures an SSH jump host for HTTP destinations.
 type SSHTunnel struct {
+	ConfigurationError   string         `yaml:"-"`
 	ID                   string         `yaml:"id"`
 	Host                 string         `yaml:"host"`
 	Port                 int            `yaml:"port"`

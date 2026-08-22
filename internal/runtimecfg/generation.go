@@ -57,6 +57,7 @@ type ForwardExecutable struct {
 
 // Generation contains all projections that must change atomically after a reload.
 type Generation struct {
+	sshTunnels       map[string]*sshRuntime
 	bundle           *config.Bundle
 	digest           string
 	connections      map[string]*connection
@@ -145,19 +146,40 @@ func compileBundle(bundle *config.Bundle, logger *slog.Logger) (*Generation, err
 		gitLabSources:    make(map[[sha256.Size]byte]*Source, len(candidate.GitLabSources)),
 		repositoryLimits: make(map[store.RepositoryKey]int), routes: append([]config.Route(nil), candidate.Routes...),
 	}
-	tunnels := make(map[string]*sshtunnel.Tunnel, len(candidate.SSHTunnels))
+	generation.sshTunnels = make(map[string]*sshRuntime)
 	for _, configured := range candidate.SSHTunnels {
-		tunnel, err := sshtunnel.New(configured)
-		if err != nil {
-			return nil, fmt.Errorf("compile SSH tunnel %q: %w", configured.ID, err)
+		runtime := &sshRuntime{summary: SSHTunnelSummary{ID: configured.ID, Status: "not_checked", Host: configured.Host, Port: configured.Port, User: configured.User}}
+		if configured.ConfigurationError != "" {
+			runtime.summary.Status = "configuration_error"
+			runtime.summary.Error = configured.ConfigurationError
+		} else {
+			var err error
+			runtime.tunnel, err = sshtunnel.New(configured)
+			if err != nil {
+				runtime.summary.Status = "configuration_error"
+				runtime.summary.Error = "key_or_trust_error"
+			}
 		}
-		tunnels[configured.ID] = tunnel
+		generation.sshTunnels[configured.ID] = runtime
 	}
-	clientFor := func(id, destination string) (*http.Client, error) {
+	clientFor := func(id, destination string, allowed bool) (*http.Client, error) {
 		if id == "" {
 			return http.DefaultClient, nil
 		}
-		return tunnels[id].HTTPClient(destination)
+		runtime := generation.sshTunnels[id]
+		if runtime == nil {
+			runtime = &sshRuntime{summary: SSHTunnelSummary{ID: id, Status: "configuration_error", Error: "missing_tunnel"}}
+			generation.sshTunnels[id] = runtime
+		}
+		if !allowed {
+			runtime.summary.Status = "configuration_error"
+			runtime.summary.Error = "private_network_permission_required"
+		}
+		runtime.destinations = append(runtime.destinations, destination)
+		if runtime.tunnel == nil || !allowed {
+			return &http.Client{Transport: unavailableSSHTransport{}}, nil
+		}
+		return runtime.tunnel.HTTPClient(destination)
 	}
 	for index := range candidate.DokployConnections {
 		canonical, err := dokploy.CanonicalBaseURL(candidate.DokployConnections[index].BaseURL)
@@ -166,7 +188,7 @@ func compileBundle(bundle *config.Bundle, logger *slog.Logger) (*Generation, err
 		}
 		candidate.DokployConnections[index].BaseURL = canonical
 		configuredDokployConnections[candidate.DokployConnections[index].ID] = candidate.DokployConnections[index]
-		httpClient, err := clientFor(candidate.DokployConnections[index].SSHTunnel, canonical)
+		httpClient, err := clientFor(candidate.DokployConnections[index].SSHTunnel, canonical, true)
 		if err != nil {
 			return nil, err
 		}
@@ -186,11 +208,11 @@ func compileBundle(bundle *config.Bundle, logger *slog.Logger) (*Generation, err
 		candidate.HTTPConnections[index].BaseURL = canonical
 		configuredHTTPConnections[candidate.HTTPConnections[index].ID] = candidate.HTTPConnections[index]
 		auth := httptarget.Authentication{Type: candidate.HTTPConnections[index].Auth.Type, Value: candidate.HTTPConnections[index].Auth.Value, Header: candidate.HTTPConnections[index].Auth.Header}
-		httpClient, err := clientFor(candidate.HTTPConnections[index].SSHTunnel, canonical)
+		httpClient, err := clientFor(candidate.HTTPConnections[index].SSHTunnel, canonical, candidate.HTTPConnections[index].AllowPrivateNetwork)
 		if err != nil {
 			return nil, err
 		}
-		client, err := httptarget.NewAuthenticatedClient(canonical, auth, candidate.HTTPConnections[index].AllowPrivateNetwork, httpClient)
+		client, err := httptarget.NewAuthenticatedClient(canonical, auth, candidate.HTTPConnections[index].AllowPrivateNetwork || candidate.HTTPConnections[index].SSHTunnel != "", httpClient)
 		if err != nil {
 			return nil, fmt.Errorf("compile HTTP connection: %w", err)
 		}
@@ -235,11 +257,11 @@ func compileBundle(bundle *config.Bundle, logger *slog.Logger) (*Generation, err
 			if err != nil {
 				return nil, fmt.Errorf("compile forward target: %w", err)
 			}
-			httpClient, err := clientFor(configured.SSHTunnel, canonical)
+			httpClient, err := clientFor(configured.SSHTunnel, canonical, configured.AllowPrivateNetwork)
 			if err != nil {
 				return nil, err
 			}
-			client, err := httptarget.NewForwardClient(canonical, configured.Host, configured.AllowPrivateNetwork, httpClient)
+			client, err := httptarget.NewForwardClient(canonical, configured.Host, configured.AllowPrivateNetwork || configured.SSHTunnel != "", httpClient)
 			if err != nil {
 				return nil, fmt.Errorf("compile forward target: %w", err)
 			}
@@ -263,6 +285,9 @@ func compileBundle(bundle *config.Bundle, logger *slog.Logger) (*Generation, err
 			continue
 		}
 		identity := tunnelIdentity(candidate, id)
+		if identity == nil {
+			identity = &sshSnapshot{ID: id}
+		}
 		target := generation.targets[configured.ID]
 		target.SSHTunnel = id
 		var snapshot targetSnapshot

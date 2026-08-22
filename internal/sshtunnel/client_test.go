@@ -386,3 +386,21 @@ func TestSSHHostKeyMismatchNeverSendsHTTP(t *testing.T) {
 		t.Fatal("sent HTTP through untrusted jump host")
 	}
 }
+
+func TestCheckSSHForwardingDoesNotSendHTTPRequest(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1) }))
+	defer upstream.Close()
+	keyPath, key := keyFile(t)
+	address, _ := jumpServer(t, key.PublicKey(), strings.TrimPrefix(upstream.URL, "http://"), false)
+	tunnel := newTestTunnel(t, address, keyPath)
+	if err := tunnel.Check(context.Background(), []string{"http://internal.example.invalid"}); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 0 {
+		t.Fatal("probe sent an HTTP request")
+	}
+	if err := tunnel.Check(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+}

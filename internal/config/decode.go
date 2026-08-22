@@ -7,6 +7,7 @@ import (
 	"io"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -46,13 +47,18 @@ func decodeGlobal(source SourceFile, lookup EnvLookup) (Global, error) {
 func decodeResource(bundle *Bundle, source SourceFile, lookup EnvLookup) error {
 	node, err := parseDocument(source)
 	if err != nil {
+		kind := regexp.MustCompile(`(?m)^kind:\s*([A-Za-z]+)\s*(?:#.*)?$`).FindSubmatch(source.Content)
+		if len(kind) > 1 && string(kind[1]) == "SSHTunnels" && !strings.Contains(err.Error(), "multiple YAML documents") {
+			bundle.SSHTunnels = append(bundle.SSHTunnels, SSHTunnel{ID: fmt.Sprintf("invalid-ssh-document-%d", len(bundle.SSHTunnels)+1), ConfigurationError: "invalid_configuration"})
+			return nil
+		}
 		return err
 	}
 	var header documentHeader
 	if err := node.Decode(&header); err != nil {
 		return sourceDecodeError(source, err)
 	}
-	if err := expandSecretEnvironmentReferences(node, lookup); err != nil {
+	if err := expandResourceSecrets(node, lookup, header.Kind); err != nil {
 		return fmt.Errorf("decode configuration %q: %w", source.Path, err)
 	}
 	switch header.Kind {
@@ -111,15 +117,26 @@ func decodeResource(bundle *Bundle, source SourceFile, lookup EnvLookup) error {
 	case "SSHTunnels":
 		var document struct {
 			Kind    string      `yaml:"kind"`
-			Tunnels []SSHTunnel `yaml:"tunnels"`
+			Tunnels []yaml.Node `yaml:"tunnels"`
 		}
 		if err := decodeStrict(node, &document); err != nil {
-			return strictSourceDecodeError(source)
+			bundle.SSHTunnels = append(bundle.SSHTunnels, SSHTunnel{ID: fmt.Sprintf("invalid-ssh-document-%d", len(bundle.SSHTunnels)+1), ConfigurationError: "invalid_configuration"})
+			return nil
 		}
-		for index := range document.Tunnels {
-			document.Tunnels[index].Location = SourceLocation{Path: source.Path, Field: "tunnels"}
+		for _, entry := range document.Tunnels {
+			var tunnel SSHTunnel
+			expandErr := expandSecretEnvironmentReferences(&entry, lookup)
+			if err := decodeStrict(&entry, &tunnel); err != nil || expandErr != nil {
+				var header struct {
+					ID string `yaml:"id"`
+				}
+				_ = entry.Decode(&header)
+				tunnel.ID = header.ID
+				tunnel.ConfigurationError = "invalid_configuration"
+			}
+			tunnel.Location = SourceLocation{Path: source.Path, Field: "tunnels"}
+			bundle.SSHTunnels = append(bundle.SSHTunnels, tunnel)
 		}
-		bundle.SSHTunnels = append(bundle.SSHTunnels, document.Tunnels...)
 	case "HTTPConnections":
 		var document httpConnectionsDocument
 		if err := decodeStrict(node, &document); err != nil {
@@ -251,6 +268,9 @@ func expandExactEnvironmentReferences(node *yaml.Node, lookup EnvLookup, path []
 			value, ok = lookup(match[1])
 		}
 		if !ok || value == "" {
+			if len(path) > 0 && path[len(path)-1] == "private_key_passphrase" {
+				return nil
+			}
 			return fmt.Errorf("environment variable %q is missing or empty", match[1])
 		}
 		node.Value = value
@@ -432,4 +452,11 @@ type forwardTargetsDocument struct {
 type routesDocument struct {
 	Kind   string  `yaml:"kind"`
 	Routes []Route `yaml:"routes"`
+}
+
+func expandResourceSecrets(node *yaml.Node, lookup EnvLookup, kind string) error {
+	if kind == "SSHTunnels" {
+		return nil
+	}
+	return expandSecretEnvironmentReferences(node, lookup)
 }

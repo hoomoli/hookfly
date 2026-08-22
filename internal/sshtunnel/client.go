@@ -145,6 +145,10 @@ func (t *Tunnel) dial(ctx context.Context, destination string) (net.Conn, error)
 	}
 	client := ssh.NewClient(conn, channels, requests)
 	raw.SetDeadline(time.Time{})
+	if destination == "" {
+		success = true
+		return &ownedConn{Conn: raw, raw: raw, client: client, stop: stop}, nil
+	}
 	forwarded, err := client.DialContext(ctx, "tcp", destination)
 	if err != nil {
 		client.Close()
@@ -171,3 +175,40 @@ func (c *ownedConn) Close() error {
 func (c *ownedConn) SetDeadline(t time.Time) error      { return c.raw.SetDeadline(t) }
 func (c *ownedConn) SetReadDeadline(t time.Time) error  { return c.raw.SetReadDeadline(t) }
 func (c *ownedConn) SetWriteDeadline(t time.Time) error { return c.raw.SetWriteDeadline(t) }
+
+// Check authenticates the jump host and opens each configured forwarding destination.
+// It never sends HTTP requests or deployment commands.
+func (t *Tunnel) Check(ctx context.Context, destinations []string) error {
+	if len(destinations) == 0 {
+		conn, err := t.dial(ctx, "")
+		if err != nil {
+			return err
+		}
+		return conn.Close()
+	}
+	seen := map[string]bool{}
+	for _, raw := range destinations {
+		u, err := url.Parse(raw)
+		if err != nil || u.Hostname() == "" {
+			return errors.New("invalid SSH destination")
+		}
+		port := u.Port()
+		if port == "" {
+			port = "80"
+			if u.Scheme == "https" {
+				port = "443"
+			}
+		}
+		address := net.JoinHostPort(u.Hostname(), port)
+		if seen[address] {
+			continue
+		}
+		seen[address] = true
+		conn, err := t.dial(ctx, address)
+		if err != nil {
+			return err
+		}
+		conn.Close()
+	}
+	return nil
+}

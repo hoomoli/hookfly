@@ -4,7 +4,7 @@ import { Button } from "./ui/button";
 import { UserMenu } from "./UserMenu";
 import { siteName as configuredSiteName } from "../site-config";
 
-export type AppPage = "ledger" | "targets" | "connections";
+export type AppPage = "ledger" | "targets" | "connections" | "ssh";
 
 interface Props {
   repositories: Repository[];
@@ -67,6 +67,9 @@ export function AppNavigation({ repositories, selected, page, onSelectRepository
         <p id="configuration-navigation-title" className="hidden px-2 pb-2 text-[10px] font-medium tracking-[0.12em] text-muted-foreground lg:block">{t("navigation.configuration")}</p>
         <Button type="button" variant="ghost" size="touch" className={page === "targets" ? activeClass : idleClass} aria-pressed={page === "targets"} onClick={() => onSelectPage("targets")}>
           <span className="truncate">{t("navigation.targets")}</span>
+        </Button>
+        <Button type="button" variant="ghost" size="touch" className={page === "ssh" ? activeClass : idleClass} aria-pressed={page === "ssh"} onClick={() => onSelectPage("ssh")}>
+          <span className="truncate">{t("ssh.heading")}</span>
         </Button>
         <Button type="button" variant="ghost" size="touch" className={page === "connections" ? activeClass : idleClass} aria-pressed={page === "connections"} onClick={() => onSelectPage("connections")}>
           <span className="truncate">{t("navigation.connections")}</span>

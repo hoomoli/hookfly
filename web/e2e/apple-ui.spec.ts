@@ -439,3 +439,22 @@ test("honors reduced motion for Sheet transitions", async ({ page }) => {
   expect(seconds.every(Number.isFinite), `animationDuration=${duration}`).toBe(true);
   expect(seconds.every((value) => value <= 0.001)).toBe(true);
 });
+
+test("checks an SSH tunnel and restores its button on mobile", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockHookflyApi(page);
+  const tunnel = { id: "internal", host: "jump.example.invalid", port: 22, status: "not_checked", destination_count: 1 };
+  await page.route("**/api/v1/ssh-tunnels**", async (route) => {
+    const checking = route.request().method() === "POST";
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify(checking ? { ...tunnel, status: "connected", latency_ms: 128, checked_at: "2026-09-30T00:00:00Z" } : { tunnels: [tunnel] }) });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "SSH tunnels", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "SSH tunnels" })).toBeVisible();
+  await page.getByRole("button", { name: "Check", exact: true }).click();
+  await expect(page.getByRole("button", { name: "128.0 ms" })).toBeDisabled();
+  await expect(page.getByText("Forwarding available")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Check", exact: true })).toBeEnabled({ timeout: 7000 });
+  await expect(page.getByText("Forwarding available")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});

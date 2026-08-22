@@ -71,6 +71,8 @@ func New(dependencies Dependencies) http.Handler {
 		mux.Handle("POST /api/v1/auth/logout", h.sameOrigin(http.HandlerFunc(dependencies.Auth.Logout)))
 	}
 	mux.Handle("GET /api/v1/repositories", h.protected(auth.PermissionEventsRead, http.HandlerFunc(h.repositories)))
+	mux.Handle("GET /api/v1/ssh-tunnels", h.protected(auth.PermissionConnectionsRead, http.HandlerFunc(h.sshTunnels)))
+	mux.Handle("POST /api/v1/ssh-tunnels/{tunnel_id}/check", h.protectedUnsafe(auth.PermissionConnectionsRead, http.HandlerFunc(h.checkSSHTunnel)))
 	mux.Handle("GET /api/v1/connections", h.protected(auth.PermissionConnectionsRead, http.HandlerFunc(h.connections)))
 	mux.Handle("GET /api/v1/connections/{connection_id}/resources", h.protected(auth.PermissionConnectionsRead, http.HandlerFunc(h.connectionResources)))
 	mux.Handle("GET /api/v1/targets", h.protected(auth.PermissionConnectionsRead, http.HandlerFunc(h.targets)))
@@ -862,4 +864,44 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+// SSH inventory is optional so existing config providers remain compatible.
+type sshConfigProvider interface {
+	SSHTunnels() []runtimecfg.SSHTunnelSummary
+	CheckSSHTunnel(context.Context, string) (runtimecfg.SSHTunnelSummary, error)
+}
+
+func (h *handler) sshTunnels(w http.ResponseWriter, r *http.Request) {
+	provider, ok := h.dependencies.Config.(sshConfigProvider)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "service unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Tunnels []runtimecfg.SSHTunnelSummary `json:"tunnels"`
+	}{provider.SSHTunnels()})
+}
+func (h *handler) checkSSHTunnel(w http.ResponseWriter, r *http.Request) {
+	provider, ok := h.dependencies.Config.(sshConfigProvider)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "service unavailable")
+		return
+	}
+	result, err := provider.CheckSSHTunnel(r.Context(), r.PathValue("tunnel_id"))
+	if err != nil {
+		status := http.StatusServiceUnavailable
+		code := "unavailable"
+		if errors.Is(err, runtimecfg.ErrSSHTunnelNotFound) {
+			status = http.StatusNotFound
+			code = "not_found"
+		}
+		if errors.Is(err, runtimecfg.ErrSSHCheckInProgress) {
+			status = http.StatusConflict
+			code = "check_in_progress"
+		}
+		writeError(w, status, code, "SSH tunnel check unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }

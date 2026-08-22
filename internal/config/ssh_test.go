@@ -41,9 +41,53 @@ func TestSSHTunnelValidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			b := &Bundle{SSHTunnels: []SSHTunnel{{ID: "jump", Host: "jump.example.invalid", User: "hookfly", PrivateKeyFile: "/keys/key", KnownHostsFile: "/data/known_hosts"}}, HTTPConnections: []HTTPConnection{{ID: "http", SSHTunnel: "jump", BaseURL: "http://internal.example.invalid", AllowPrivateNetwork: true, Auth: HTTPAuthentication{Type: "bearer", Value: "secret"}}}}
 			tc.mutate(b)
-			if err := ValidateAndCanonicalize(b); err == nil {
-				t.Fatal("accepted invalid tunnel configuration")
+			err := ValidateAndCanonicalize(b)
+			if tc.name == "target level tunnel" {
+				if err == nil {
+					t.Fatal("accepted invalid target fields")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SSH error prevented startup: %v", err)
+			}
+			if tc.name != "unknown tunnel" && tc.name != "private network not allowed" && b.SSHTunnels[0].ConfigurationError == "" {
+				t.Fatal("missing SSH diagnostic")
 			}
 		})
+	}
+}
+
+func TestDecodeMalformedSSHDocumentDoesNotBlockStartup(t *testing.T) {
+	for _, raw := range []string{"kind: SSHTunnels\ntunnels: [broken", "kind: SSHTunnels\ntunnels:\n  - id: jump\n    port: invalid\n"} {
+		b, err := Decode(Candidate{Global: source("hookfly.yaml", "kind: Hookfly\n"), Resources: []SourceFile{source("ssh.yaml", raw)}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ValidateAndCanonicalize(b); err != nil {
+			t.Fatal(err)
+		}
+		if len(b.SSHTunnels) != 1 || b.SSHTunnels[0].ConfigurationError == "" {
+			t.Fatal("missing invalid configuration diagnostic")
+		}
+	}
+}
+
+func TestSSHExceptionDoesNotSwallowOtherDocuments(t *testing.T) {
+	_, err := Decode(Candidate{Global: source("hookfly.yaml", "kind: Hookfly\n"), Resources: []SourceFile{source("routes.yaml", "kind: Routes\nroutes: []\n---\nkind: SSHTunnels\ntunnels: []\n")}}, nil)
+	if err == nil {
+		t.Fatal("SSH exception swallowed invalid Routes document")
+	}
+}
+func TestSSHUnknownSecretFieldIsNonFatal(t *testing.T) {
+	b, err := Decode(Candidate{Global: source("hookfly.yaml", "kind: Hookfly\n"), Resources: []SourceFile{source("ssh.yaml", "kind: SSHTunnels\ntunnels:\n  - id: jump\n    token: ${UNSET}\n")}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateAndCanonicalize(b); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.SSHTunnels) != 1 || b.SSHTunnels[0].ConfigurationError == "" {
+		t.Fatal("missing malformed SSH diagnostic")
 	}
 }

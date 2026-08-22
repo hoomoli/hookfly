@@ -948,3 +948,61 @@ func TestManualAttemptRejectsUnsafeBodies(t *testing.T) {
 		t.Fatalf("large = %d %s", rr.Code, rr.Body.String())
 	}
 }
+
+type sshPageConfig struct {
+	fakeConfigController
+	result runtimecfg.SSHTunnelSummary
+	err    error
+}
+
+func (f *sshPageConfig) SSHTunnels() []runtimecfg.SSHTunnelSummary {
+	return []runtimecfg.SSHTunnelSummary{f.result}
+}
+func (f *sshPageConfig) CheckSSHTunnel(context.Context, string) (runtimecfg.SSHTunnelSummary, error) {
+	return f.result, f.err
+}
+func TestSSHTunnelInventoryAndCheck(t *testing.T) {
+	controller := &sshPageConfig{result: runtimecfg.SSHTunnelSummary{ID: "jump", Status: "configuration_error", Error: "key_or_trust_error"}}
+	handler := New(Dependencies{Config: controller, Provider: auth.NoAuthProvider{}})
+	for _, path := range []string{"/api/v1/ssh-tunnels", "/api/v1/ssh-tunnels/jump/check"} {
+		method := http.MethodGet
+		if strings.HasSuffix(path, "/check") {
+			method = http.MethodPost
+		}
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, httptest.NewRequest(method, path, nil))
+		if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "configuration_error") {
+			t.Fatalf("SSH response: %d %s", rr.Code, rr.Body.String())
+		}
+	}
+	controller.err = runtimecfg.ErrSSHTunnelNotFound
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v1/ssh-tunnels/absent/check", nil))
+	if rr.Code != 404 {
+		t.Fatalf("missing tunnel: %d", rr.Code)
+	}
+	controller.err = runtimecfg.ErrSSHCheckInProgress
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v1/ssh-tunnels/jump/check", nil))
+	if rr.Code != 409 {
+		t.Fatalf("concurrent check: %d", rr.Code)
+	}
+}
+
+func TestSSHCheckRequiresConnectionPermissionAndSameOrigin(t *testing.T) {
+	controller := &sshPageConfig{result: runtimecfg.SSHTunnelSummary{ID: "jump", Status: "not_checked"}}
+	reader := providerFunc(func(*http.Request) (auth.Principal, error) {
+		return auth.Principal{ID: "reader", Permissions: map[string]bool{auth.PermissionEventsRead: true}}, nil
+	})
+	rr := httptest.NewRecorder()
+	New(Dependencies{Config: controller, Provider: reader}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v1/ssh-tunnels/jump/check", nil))
+	if rr.Code != 403 {
+		t.Fatalf("unauthorized SSH check: %d", rr.Code)
+	}
+	authService := &authServiceFake{NoAuthProvider: auth.NoAuthProvider{}, origin: "https://webhook.example.invalid"}
+	rr = httptest.NewRecorder()
+	New(Dependencies{Config: controller, Provider: authService, Auth: authService}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v1/ssh-tunnels/jump/check", nil))
+	if rr.Code != 403 {
+		t.Fatalf("missing origin: %d", rr.Code)
+	}
+}

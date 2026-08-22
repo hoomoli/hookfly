@@ -40,6 +40,13 @@ export const en = {
       connections: "Connections",
       targets: "Targets",
     },
+    ssh: {
+      heading: "SSH tunnels", description: "Check SSH authentication and forwarding to configured destination ports. No deployment request is sent.",
+      refresh: "Refresh", loading: "Loading…", empty: "No SSH tunnels configured", loadFailed: "Could not load SSH tunnels",
+      name: "Name", host: "Jump host", status: "Status", latency: "Check time", action: "Action", check: "Check", checking: "Checking…", failed: "Failed",
+      states: {not_checked: "Not checked", configuration_error: "Configuration error", connection_error: "Connection error", connected: "Forwarding available", ssh_only: "SSH connected; no forwarding destination"},
+      errors: {invalid_configuration: "Invalid SSH configuration", duplicate_id: "Duplicate tunnel ID", key_or_trust_error: "Private key or trust file unavailable", missing_tunnel: "Referenced tunnel is not configured", private_network_permission_required: "Private network access must be allowed", connection_failed: "SSH authentication or destination connection failed", check_failed: "Check request failed"},
+    },
     connections: {
     sshTunnel: "SSH tunnel: {{id}}",
       eyebrow: "{{siteName}} / CONFIGURATION",

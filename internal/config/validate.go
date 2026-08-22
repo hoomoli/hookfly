@@ -152,7 +152,7 @@ func validateConnections(dokployConnections []DokployConnection, httpConnections
 		if err := addUniqueLocation(locations, "connection", connection.ID, connection.Location); err != nil {
 			return nil, err
 		}
-		if err := validateHTTPURL(connection.BaseURL, connection.AllowPrivateNetwork); err != nil {
+		if err := validateHTTPURL(connection.BaseURL, connection.AllowPrivateNetwork || connection.SSHTunnel != ""); err != nil {
 			return nil, fmt.Errorf("HTTP connection %q: %w", connection.ID, err)
 		}
 		if err := validateHTTPAuthentication(connection.Auth); err != nil {
@@ -238,7 +238,7 @@ func validateTargets(configured []Target, connections map[string]string) (map[st
 			if target.ResourceType != "" || target.ResourceID != "" || target.PollTimeout != nil || target.Method != "" || target.Path != "" || len(target.Query) != 0 || len(target.Headers) != 0 || target.Body != nil || len(target.SuccessStatuses) != 0 {
 				return nil, fmt.Errorf("unsupported forward request fields")
 			}
-			if err := validateForwardURL(target.URL, target.AllowPrivateNetwork); err != nil {
+			if err := validateForwardURL(target.URL, target.AllowPrivateNetwork || target.SSHTunnel != ""); err != nil {
 				return nil, err
 			}
 			if target.Host == "" {

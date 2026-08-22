@@ -40,6 +40,13 @@ export const zhCN = {
       connections: "连接",
       targets: "目标",
     },
+    ssh: {
+      heading: "SSH 通道", description: "检测 SSH 认证及关联目标端口的转发通路，不发送部署请求。",
+      refresh: "刷新", loading: "加载中…", empty: "暂无 SSH 通道", loadFailed: "SSH 通道加载失败",
+      name: "名称", host: "跳板机", status: "状态", latency: "检测耗时", action: "操作", check: "检测", checking: "检测中…", failed: "检测失败",
+      states: {not_checked: "未检测", configuration_error: "配置异常", connection_error: "连接异常", connected: "转发通路可用", ssh_only: "SSH 可连接，未配置转发目标"},
+      errors: {invalid_configuration: "SSH 配置异常", duplicate_id: "通道名称重复", key_or_trust_error: "私钥或信任文件不可用", missing_tunnel: "引用的通道未配置", private_network_permission_required: "需要允许访问私有网络", connection_failed: "SSH 认证或目标端口连接失败", check_failed: "检测请求失败"},
+    },
     connections: {
     sshTunnel: "SSH 隧道：{{id}}",
       eyebrow: "{{siteName}} / 配置",

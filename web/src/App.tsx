@@ -6,6 +6,7 @@ import { AppShell } from "./components/AppShell";
 import { NotificationCenter } from "./components/NotificationCenter";
 import { SettingsCenter } from "./components/SettingsCenter";
 import { useNotifications } from "./hooks/useNotifications";
+import { SSHTunnelsPage } from "./pages/SSHTunnelsPage";
 import { ConnectionsPage } from "./pages/ConnectionsPage";
 import { LedgerPage } from "./pages/LedgerPage";
 import { TargetsPage } from "./pages/TargetsPage";
@@ -43,8 +44,8 @@ function AppContent({ session, signOut }: { session: AuthSession; signOut: () =>
   const [historyRevision, setHistoryRevision] = useState(0);
   const query = useMemo(() => new URLSearchParams(search), [search]);
   const selection = selectionFrom(query);
-  const page: AppPage = query.get("view") === "connections" ? "connections" : query.get("view") === "targets" ? "targets" : "ledger";
-  const targetInventory = useTargetInventory(page !== "connections");
+  const page: AppPage = query.get("view") === "ssh" ? "ssh" : query.get("view") === "connections" ? "connections" : query.get("view") === "targets" ? "targets" : "ledger";
+  const targetInventory = useTargetInventory(page === "ledger" || page === "targets");
 
   useEffect(() => {
     document.title = browserTitle(siteName, t("navigation.deploymentLedger"));
@@ -126,7 +127,7 @@ function AppContent({ session, signOut }: { session: AuthSession; signOut: () =>
 
   const selectPage = (nextPage: AppPage) => {
     const next = new URLSearchParams(window.location.search);
-    if (nextPage === "connections" || nextPage === "targets") next.set("view", nextPage);
+    if (nextPage === "connections" || nextPage === "targets" || nextPage === "ssh") next.set("view", nextPage);
     else next.delete("view");
     replaceQuery(next);
   };
@@ -143,7 +144,7 @@ function AppContent({ session, signOut }: { session: AuthSession; signOut: () =>
         onSignOut={signOut}
       />
     )}>
-      {page === "connections" ? <ConnectionsPage globalActions={globalActions} /> : page === "targets" ? <TargetsPage inventory={targetInventory} globalActions={globalActions} /> : (
+      {page === "ssh" ? <SSHTunnelsPage globalActions={globalActions} /> : page === "connections" ? <ConnectionsPage globalActions={globalActions} /> : page === "targets" ? <TargetsPage inventory={targetInventory} globalActions={globalActions} /> : (
         <LedgerPage
           globalActions={globalActions}
           search={search}
