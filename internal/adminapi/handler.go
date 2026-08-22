@@ -26,6 +26,7 @@ const maxManualBody = 64 * 1024
 
 type queryStore interface {
 	Ready(context.Context) error
+	PipelineStatistics(context.Context, string, string, time.Time, time.Time) (store.PipelineStatistics, error)
 	ListRepositories(context.Context, []store.ConfiguredRepository) ([]store.ConfiguredRepository, error)
 	ListEvents(context.Context, store.EventQuery) (store.EventPage, error)
 	GetEventDetail(context.Context, string) (store.EventDetail, error)
@@ -76,6 +77,8 @@ func New(dependencies Dependencies) http.Handler {
 	mux.Handle("GET /api/v1/connections", h.protected(auth.PermissionConnectionsRead, http.HandlerFunc(h.connections)))
 	mux.Handle("GET /api/v1/connections/{connection_id}/resources", h.protected(auth.PermissionConnectionsRead, http.HandlerFunc(h.connectionResources)))
 	mux.Handle("GET /api/v1/targets", h.protected(auth.PermissionConnectionsRead, http.HandlerFunc(h.targets)))
+	mux.Handle("GET /api/v1/statistics", h.protected(auth.PermissionEventsRead, http.HandlerFunc(h.statistics)))
+	mux.Handle("GET /api/v1/changes/stream", h.protected(auth.PermissionEventsRead, http.HandlerFunc(h.changesStream)))
 	mux.Handle("GET /api/v1/events", h.protected(auth.PermissionEventsRead, http.HandlerFunc(h.events)))
 	mux.Handle("GET /api/v1/events/{event_id}", h.protected(auth.PermissionEventsRead, http.HandlerFunc(h.eventDetail)))
 	mux.Handle("DELETE /api/v1/events", h.protectedUnsafe(auth.PermissionEventsDelete, http.HandlerFunc(h.clearHistory)))

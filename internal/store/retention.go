@@ -21,6 +21,10 @@ func (s *Store) Prune(ctx context.Context, repositoryLimits map[RepositoryKey]in
 	}
 	defer tx.Rollback()
 
+	if _, err := tx.ExecContext(ctx, "DELETE FROM pipeline_observations WHERE received_at < ?", s.now().AddDate(0, 0, -90).UnixMilli()); err != nil {
+		return PruneResult{}, fmt.Errorf("prune pipeline observations: %w", err)
+	}
+
 	groups, err := retentionGroups(ctx, tx)
 	if err != nil {
 		return PruneResult{}, err

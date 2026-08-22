@@ -51,6 +51,7 @@ func New(providerName string, manager *runtimecfg.Manager, ingester Ingester, cl
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	receivedAt := h.clock()
 	if h.manager == nil || h.ingester == nil {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse{Status: "unavailable"})
 		return
@@ -112,7 +113,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	command := domain.IngestCommand{
 		DeliveryID: deliveryIdentity(event, incoming, body), CanonicalEvent: event,
-		ReceivedAt: h.clock(), ConfigDigest: view.Generation.Digest(),
+		ReceivedAt: receivedAt, ConfigDigest: view.Generation.Digest(),
 		HeadersJSON: headersJSON, PayloadJSON: body,
 	}
 	deferred := incoming.Supported && reloadDefers(view.State)

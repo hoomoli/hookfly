@@ -1006,3 +1006,7 @@ func TestSSHCheckRequiresConnectionPermissionAndSameOrigin(t *testing.T) {
 		t.Fatalf("missing origin: %d", rr.Code)
 	}
 }
+
+func (f *fakeStore) PipelineStatistics(context.Context, string, string, time.Time, time.Time) (store.PipelineStatistics, error) {
+	return store.PipelineStatistics{Runs: []store.PipelineRun{}}, nil
+}

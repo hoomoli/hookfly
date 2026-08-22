@@ -1067,3 +1067,27 @@ func describePublicationGeneration(t *testing.T, generation *runtimecfg.Generati
 	}
 	return strings.Join(markers, ",")
 }
+
+// The body can take time to arrive; receipt must precede body reads and parsing.
+type receiveTimeReader struct {
+	io.Reader
+	onRead func()
+}
+
+func (r receiveTimeReader) Read(p []byte) (int, error) { r.onRead(); return r.Reader.Read(p) }
+
+func TestReceiveTimeCapturedBeforeReadingBody(t *testing.T) {
+	at := time.Unix(100, 0).UTC()
+	now := at
+	ingester := &recordingIngester{}
+	handler := providerMux("gitlab", publichook.New("gitlab", webhookManager(t), ingester, func() time.Time { return now }))
+	body := receiveTimeReader{Reader: strings.NewReader(gitlabPipeline("7")), onRead: func() { now = at.Add(time.Minute) }}
+	request := httptest.NewRequest(http.MethodPost, "/hooks/gitlab", body)
+	request.Header = gitlabHeaders("gitlab-token", "receive-time")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, request)
+	commands := ingester.directCommands()
+	if len(commands) != 1 || !commands[0].ReceivedAt.Equal(at) {
+		t.Fatalf("received commands=%+v, status=%d", commands, rr.Code)
+	}
+}

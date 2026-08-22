@@ -137,3 +137,10 @@ export async function listSSHTunnels(signal?: AbortSignal): Promise<import("./ty
 export function checkSSHTunnel(id: string, signal?: AbortSignal): Promise<import("./types").SSHTunnelSummary> {
   return request(`/api/v1/ssh-tunnels/${encodeURIComponent(id)}/check`, { method: "POST", signal });
 }
+
+export function getPipelineStatistics(source: string | undefined, repository: string | undefined, from: string, to: string): Promise<import("./components/PipelineStatistics").PipelineStatisticsResponse> {
+  const query = new URLSearchParams({ from, to });
+  if (source) query.set("source", source);
+  if (repository) query.set("repository", repository);
+  return request(`/api/v1/statistics?${query}`);
+}

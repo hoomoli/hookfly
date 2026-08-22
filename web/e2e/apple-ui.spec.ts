@@ -458,3 +458,20 @@ test("checks an SSH tunnel and restores its button on mobile", async ({ page }) 
   await expect(page.getByText("Forwarding available")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
+
+test("shows receive-time pipeline statistics and stage chart", async ({ page }) => {
+  await mockHookflyApi(page);
+  await page.route("**/api/v1/statistics?**", route => route.fulfill({ json: {
+    server_now: "2026-10-29T04:00:00Z", retention_days: 90, active: false,
+    runs: [{ provider: "gitlab", source: "gitlab-primary", repository: "console", pipeline_id: "42", ref: "main", status: "success", first_received: "2026-10-29T03:00:00Z", last_received: "2026-10-29T03:03:00Z", initialization_ms: 10000, waiting_ms: 50000, running_ms: 120000, total_ms: 180000, complete: true, restarts: 0 }],
+  } }));
+  await page.goto("/");
+  await page.getByRole("button", { name: "Pipeline statistics", exact: true }).click();
+  await expect(page.getByText("console #42", { exact: true })).toBeVisible();
+  await expect(page.getByRole("img", { name: /Initializing: 10.0 s/ })).toBeVisible();
+  await expect(page.getByText("100%", { exact: true })).toBeVisible();
+  await page.screenshot({ path: "/tmp/hookfly-statistics-desktop.png", fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("heading", { name: "Pipeline statistics", exact: true })).toBeVisible();
+  await page.screenshot({ path: "/tmp/hookfly-statistics-mobile.png", fullPage: true });
+});

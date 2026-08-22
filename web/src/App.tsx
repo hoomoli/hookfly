@@ -58,6 +58,12 @@ function AppContent({ session, signOut }: { session: AuthSession; signOut: () =>
     window.history.replaceState(null, "", `${window.location.pathname}${nextSearch}`);
     setSearch(nextSearch);
   }, []);
+  useEffect(() => {
+    if (typeof EventSource === "undefined") return;
+    const stream = new EventSource("/api/v1/changes/stream");
+    stream.addEventListener("change", () => window.dispatchEvent(new Event("hookfly:data-changed")));
+    return () => stream.close();
+  }, []);
   const notifications = useNotifications(openNotificationEvent, repositories);
   const onHistoryCleared = useCallback(() => {
     const next = new URLSearchParams(window.location.search);

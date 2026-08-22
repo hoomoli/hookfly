@@ -187,6 +187,16 @@ Retry and redeploy are explicit management actions, not automatic POST retries. 
 
 Repository navigation reflects only the current configuration. Removing a configured repository removes it from navigation after reload, but retained historical events remain under **All** until the new generation's retention limits prune them. A historical delivery whose target changed or disappeared is marked as blocked and offers no retry or redeploy action.
 
+## Pipeline statistics and live updates
+
+The ledger's **Pipeline statistics** view groups pipeline notifications by provider, source, repository, and external pipeline ID. Select a repository and a 24-hour, 7-day, 30-day, or custom period of up to 90 days. Period membership uses the first retained notification receipt for a pipeline; charts use the browser's displayed timezone. Stage bars show initializing, waiting, and running durations. Mean, P50, and P95 include only finished pipelines with observed waiting/initialization, running, and terminal boundaries. Success rate is successful pipelines divided by finished pipelines, including failed, cancelled, and skipped outcomes.
+
+All boundaries use the backend's UTC millisecond timestamp captured when the webhook enters its handler. Payload timestamps and browser rendering time do not determine durations. These are notification-observed durations and include provider delivery delays. Repeated states do not reset a phase boundary. Missing starts, unknown states, ambiguous simultaneous transitions, backwards stage transitions, and observed restarts are excluded from duration metrics. In-progress stage bars use the backend's response time. A restart under the same external pipeline ID remains one pipeline and is marked as restarted rather than counted as an independent run.
+
+A migration copies available pipeline events into a separate lightweight observation table. New observations are stored atomically with incoming events and survive event-history retention and **Clear history**. The regular retention pass removes observations older than 90 days; reads also enforce that window. Already deleted notifications cannot be recovered, so pre-upgrade historical coverage may be incomplete. The statistics API is `GET /api/v1/statistics`, with optional `source`, `repository`, and RFC 3339 `from`/`to` parameters. The response includes `server_now`, coverage flags, and stage durations in milliseconds.
+
+The management UI opens `GET /api/v1/changes/stream` for data invalidations separately from notification preferences. Each connection starts with an invalidation, including reconnects. Visible lists, inspectors, and statistics coalesce invalidations before re-requesting data; active views also poll every second and idle views every 30 seconds as a fallback. Hidden views pause requests and reload when visible. Both SSE endpoints require event-read permission, disable proxy buffering, and send a heartbeat every 25 seconds.
+
 ## Development and images
 
 Run the same primary checks as CI:

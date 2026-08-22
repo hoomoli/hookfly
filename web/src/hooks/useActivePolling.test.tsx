@@ -95,3 +95,21 @@ describe("useActivePolling", () => {
     expect(load).toHaveBeenCalledTimes(1);
   });
 });
+
+it("refreshes idle data on push and periodically as a fallback", async () => {
+  vi.useFakeTimers();
+  setVisibility("visible");
+  const load = vi.fn(async () => ({ active: false }));
+  const view = render(<Probe load={load} />);
+  await act(async () => Promise.resolve());
+  await act(async () => {
+    window.dispatchEvent(new Event("hookfly:data-changed"));
+    window.dispatchEvent(new Event("hookfly:data-changed"));
+    await vi.advanceTimersByTimeAsync(150);
+  });
+  expect(load).toHaveBeenCalledTimes(2);
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(load).toHaveBeenCalledTimes(3);
+  view.unmount();
+  vi.useRealTimers();
+});

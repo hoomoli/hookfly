@@ -1,3 +1,4 @@
+import { PipelineStatistics } from "../components/PipelineStatistics";
 import { X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
@@ -106,6 +107,8 @@ interface LedgerPageProps {
 
 export function LedgerPage({ globalActions, search, repositories, repositoryError, selection, replaceQuery, refreshRepositories, targets = [], targetRefreshedAt, historyRevision }: LedgerPageProps) {
   const { t } = useTranslation();
+  const [statisticsSelected, setStatistics] = useState(false);
+  const statistics = statisticsSelected && selection.kind !== "unmatched";
   const [selectedID, setSelectedID] = useState<string | null>(null);
   const [requestedOperation, setRequestedOperation] = useState<{ delivery: EventDeliverySummary; operation: Operation } | null>(null);
   const refreshAfterConfig = useRef<() => void>(() => undefined);
@@ -209,6 +212,8 @@ export function LedgerPage({ globalActions, search, repositories, repositoryErro
 
       {configReload.error && <Alert tone="destructive" className="mt-4"><AlertDescription>{t("errors.configStatus", { message: configReload.error.message })}</AlertDescription></Alert>}
       {repositoryError && <Alert tone="destructive" className="mt-4"><AlertDescription>{t("errors.repositoryIndex", { message: repositoryError })}</AlertDescription></Alert>}
+      <div className="my-4 flex gap-2" role="group" aria-label={t("statistics.view")}><Button variant={statistics ? "ghost" : "secondary"} aria-pressed={!statistics} onClick={() => setStatistics(false)}>{t("statistics.records")}</Button><Button disabled={selection.kind === "unmatched"} variant={statistics ? "secondary" : "ghost"} aria-pressed={statistics} onClick={() => setStatistics(true)}>{t("statistics.title")}</Button></div>
+      {statistics ? <PipelineStatistics source={selection.kind === "repository" ? selection.sourceID : undefined} repository={selection.kind === "repository" ? selection.repositoryID : undefined} /> : <>
       <EventFilters filters={filters} repositories={repositories} targets={targets} onChange={updateFilter} onClear={clearFilters} />
       {data && events.error && <Alert tone="destructive" className="mb-4 flex items-center justify-between gap-3">
         <AlertDescription className="mt-0">{t("events.stale", { message: events.error.message, status: data.active ? t("events.retrying") : t("events.refreshStopped") })}</AlertDescription>
@@ -231,6 +236,7 @@ export function LedgerPage({ globalActions, search, repositories, repositoryErro
         replaceQuery(next);
       }} refreshList={events.refresh} targets={targets} targetRefreshedAt={targetRefreshedAt} />}
       </div>
+      </>}
       {requestedOperation && <OperationConfirmationDialog currentAttemptID={requestedOperation.delivery.current_attempt_id} operation={requestedOperation.operation} open onOpenChange={(open) => { if (!open) setRequestedOperation(null); }} onConfirm={submitRequestedOperation} />}
     </>
   );

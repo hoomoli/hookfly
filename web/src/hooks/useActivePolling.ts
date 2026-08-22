@@ -40,16 +40,16 @@ export function useActivePolling<T extends ActiveResponse>(load: () => Promise<T
           activeRef.current = next.active;
           setError(null);
           setLoading(false);
-          if (next.active && document.visibilityState === "visible") {
-            timer = setTimeout(run, 1_000);
+          if (document.visibilityState === "visible") {
+            timer = setTimeout(run, next.active ? 1_000 : 30_000);
           }
         },
         (reason: unknown) => {
           if (disposed || version !== requestVersion) return;
           setError(reason instanceof Error ? reason : new Error(i18n.t("errors.requestFailed")));
           setLoading(false);
-          if (activeRef.current && document.visibilityState === "visible") {
-            timer = setTimeout(run, 1_000);
+          if (document.visibilityState === "visible") {
+            timer = setTimeout(run, activeRef.current ? 1_000 : 30_000);
           }
         },
       );
@@ -61,11 +61,18 @@ export function useActivePolling<T extends ActiveResponse>(load: () => Promise<T
       else requestVersion += 1;
     };
 
+    const onChange = () => {
+      if (document.visibilityState !== "visible") return;
+      clearTimer();
+      timer = setTimeout(run, 150);
+    };
+    window.addEventListener("hookfly:data-changed", onChange);
     runRef.current = run;
     document.addEventListener("visibilitychange", onVisibility);
     if (document.visibilityState === "visible") run();
     return () => {
       disposed = true;
+      window.removeEventListener("hookfly:data-changed", onChange);
       requestVersion += 1;
       clearTimer();
       document.removeEventListener("visibilitychange", onVisibility);

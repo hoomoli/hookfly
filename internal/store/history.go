@@ -42,5 +42,6 @@ func (s *Store) ClearHistory(ctx context.Context) (ClearHistoryResult, error) {
 	if err := tx.Commit(); err != nil {
 		return ClearHistoryResult{}, fmt.Errorf("commit clear history: %w", err)
 	}
+	s.notifyChanged()
 	return ClearHistoryResult{Deleted: int(count)}, nil
 }
