@@ -3,6 +3,7 @@ package runtimecfg
 import (
 	"context"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -64,6 +65,8 @@ type targetRuntimeSnapshot struct {
 }
 
 func (m *Manager) TargetInventory(ctx context.Context) TargetInventory {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
 	m.gate.RLock()
 	targets := []*Target{}
 	connections := map[string]*connection{}
@@ -89,20 +92,86 @@ func (m *Manager) TargetInventory(ctx context.Context) TargetInventory {
 		connectionIDs = append(connectionIDs, id)
 	}
 	sort.Strings(connectionIDs)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	discoverySlots := make(chan struct{}, 4)
 	for _, id := range connectionIDs {
 		if connections[id] == nil || connections[id].kind != ConnectionTypeDokploy {
 			continue
 		}
-		discovered, err := connections[id].discoverResources(ctx)
-		if err != nil {
-			failed[id] = true
-			result.Errors = append(result.Errors, TargetInventoryError{ConnectionID: id, Code: "upstream_unavailable"})
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case discoverySlots <- struct{}{}:
+				defer func() { <-discoverySlots }()
+			case <-ctx.Done():
+				mu.Lock()
+				failed[id] = true
+				result.Errors = append(result.Errors, TargetInventoryError{ConnectionID: id, Code: "upstream_unavailable"})
+				mu.Unlock()
+				return
+			}
+			discovered, err := connections[id].discoverResources(ctx)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				failed[id] = true
+				result.Errors = append(result.Errors, TargetInventoryError{ConnectionID: id, Code: "upstream_unavailable"})
+				return
+			}
+			resources[id] = make(map[string]ConnectionResource, len(discovered))
+			for _, resource := range discovered {
+				resources[id][resource.Type+"\x00"+resource.ResourceID] = resource
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Query each unique Compose independently; slow targets share one overall deadline.
+	snapshots := make(chan struct {
+		key   string
+		value targetRuntimeSnapshot
+	}, len(targets))
+	slots := make(chan struct{}, 4)
+	for _, target := range targets {
+		if _, found := resources[target.ConnectionID][target.ResourceType+"\x00"+target.ComposeID]; !found || failed[target.ConnectionID] {
 			continue
 		}
-		resources[id] = make(map[string]ConnectionResource, len(discovered))
-		for _, resource := range discovered {
-			resources[id][resource.Type+"\x00"+resource.ResourceID] = resource
+		runtimeKey := target.ConnectionID + "\x00" + target.ResourceType + "\x00" + target.ComposeID
+		if _, exists := runtimes[runtimeKey]; exists {
+			continue
 		}
+		runtimes[runtimeKey] = targetRuntimeSnapshot{status: TargetRuntimeUnknown, containers: []TargetContainer{}}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case slots <- struct{}{}:
+				defer func() { <-slots }()
+			case <-ctx.Done():
+				return
+			}
+			runtime := targetRuntimeSnapshot{status: TargetRuntimeUnknown, containers: []TargetContainer{}}
+			if appName, err := connections[target.ConnectionID].discoverComposeAppName(ctx, target.ComposeID); err == nil {
+				runtime.appName = appName
+				if containers, err := connections[target.ConnectionID].discoverContainers(ctx, appName); err == nil {
+					for _, container := range containers {
+						runtime.containers = append(runtime.containers, TargetContainer{Name: container.Name, State: container.State, Health: container.Health, RestartCount: container.RestartCount})
+					}
+					runtime.status = summarizeTargetRuntime(runtime.containers)
+				}
+			}
+			snapshots <- struct {
+				key   string
+				value targetRuntimeSnapshot
+			}{runtimeKey, runtime}
+		}()
+	}
+	wg.Wait()
+	close(snapshots)
+	for snapshot := range snapshots {
+		runtimes[snapshot.key] = snapshot.value
 	}
 	for _, target := range targets {
 		item := TargetInventoryItem{ID: target.ID, ConnectionID: target.ConnectionID, ResourceType: target.ResourceType, ResourceID: target.ComposeID, Condition: TargetConditionUnavailable}
@@ -123,20 +192,7 @@ func (m *Manager) TargetInventory(ctx context.Context) TargetInventory {
 			item.Status = resource.Status
 			item.Condition = TargetConditionAvailable
 			runtimeKey := target.ConnectionID + "\x00" + target.ResourceType + "\x00" + target.ComposeID
-			runtime, cached := runtimes[runtimeKey]
-			if !cached {
-				runtime = targetRuntimeSnapshot{status: TargetRuntimeUnknown, containers: []TargetContainer{}}
-				if appName, err := connections[target.ConnectionID].discoverComposeAppName(ctx, target.ComposeID); err == nil {
-					runtime.appName = appName
-					if containers, err := connections[target.ConnectionID].discoverContainers(ctx, appName); err == nil {
-						for _, container := range containers {
-							runtime.containers = append(runtime.containers, TargetContainer{Name: container.Name, State: container.State, Health: container.Health, RestartCount: container.RestartCount})
-						}
-						runtime.status = summarizeTargetRuntime(runtime.containers)
-					}
-				}
-				runtimes[runtimeKey] = runtime
-			}
+			runtime := runtimes[runtimeKey]
 			if runtime.appName != "" {
 				item.AppName = runtime.appName
 			}
@@ -145,6 +201,7 @@ func (m *Manager) TargetInventory(ctx context.Context) TargetInventory {
 		}
 		result.Targets = append(result.Targets, item)
 	}
+	sort.Slice(result.Errors, func(i, j int) bool { return result.Errors[i].ConnectionID < result.Errors[j].ConnectionID })
 	return result
 }
 

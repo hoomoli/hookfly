@@ -128,8 +128,11 @@ func (a *App) servers() (*http.Server, *http.Server) {
 		adminDependencies.Attempts = a.attempts
 	}
 	adminMux := adminapi.New(adminDependencies)
-	return newServer(a.PublicAddr, httpx.RequestContext(a.logger, publicMux)),
-		newServer(a.AdminAddr, httpx.RequestContext(a.logger, adminMux))
+	publicServer := newServer(a.PublicAddr, httpx.RequestContext(a.logger, publicMux))
+	adminServer := newServer(a.AdminAddr, httpx.RequestContext(a.logger, adminMux))
+	// Allow bounded inventory queries to finish before the socket write deadline.
+	adminServer.WriteTimeout = 30 * time.Second
+	return publicServer, adminServer
 }
 
 func newServer(address string, handler http.Handler) *http.Server {

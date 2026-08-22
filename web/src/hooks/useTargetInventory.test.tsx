@@ -31,3 +31,37 @@ it("loads once when enabled and retains the last inventory when refresh fails", 
   expect(result.current.data?.targets[0].status).toBe("done");
   expect(calls).toBe(2);
 });
+
+it("stops loading on timeout and can retry", async () => {
+  const timeout = new AbortController();
+  const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeout.signal);
+  vi.stubGlobal("fetch", vi.fn((_path: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+    init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+  })));
+  try {
+    const { result } = renderHook(() => useTargetInventory(true));
+    expect(result.current.loading).toBe(true);
+    await act(async () => timeout.abort(new DOMException("Timeout", "TimeoutError")));
+    expect(result.current.loading).toBe(false);
+    expect(result.current.error).toBe("The request timed out. Please try again.");
+    timeoutSpy.mockRestore();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(inventory), { status: 200 })));
+    act(() => result.current.refresh());
+    await waitFor(() => expect(result.current.data?.targets[0].id).toBe("production"));
+    expect(result.current.error).toBeNull();
+  } finally {
+    timeoutSpy.mockRestore();
+  }
+});
+
+it("aborts the pending request when leaving the page", () => {
+  let signal: AbortSignal | null | undefined;
+  vi.stubGlobal("fetch", vi.fn((_path: string, init?: RequestInit) => {
+    signal = init?.signal;
+    return new Promise(() => {});
+  }));
+  const { rerender } = renderHook(({ enabled }) => useTargetInventory(enabled), { initialProps: { enabled: true } });
+  expect(signal?.aborted).toBe(false);
+  rerender({ enabled: false });
+  expect(signal?.aborted).toBe(true);
+});

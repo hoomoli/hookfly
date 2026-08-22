@@ -286,6 +286,7 @@ export const en = {
       copyDeployRequestFailed: "Could not copy the deployment request. Select and copy it manually.",
     },
     errors: {
+      requestTimeout: "The request timed out. Please try again.",
       requestFailed: "Request failed",
       configStatusFailed: "Could not read configuration status",
       reloadUnknown: "Configuration reload result is unknown",

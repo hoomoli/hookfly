@@ -88,8 +88,16 @@ export async function listConnectionResources(connectionID: string, signal?: Abo
   return response.resources;
 }
 
-export function listTargets(): Promise<TargetInventory> {
-  return request<TargetInventory>("/api/v1/targets");
+export async function listTargets(signal?: AbortSignal): Promise<TargetInventory> {
+  const timeout = AbortSignal.timeout(25_000);
+  try {
+    return await request<TargetInventory>("/api/v1/targets", {
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+    });
+  } catch (error) {
+    if (timeout.aborted) throw new Error(i18n.t("errors.requestTimeout"));
+    throw error;
+  }
 }
 
 export function getConfigStatus(): Promise<ConfigStatus> {

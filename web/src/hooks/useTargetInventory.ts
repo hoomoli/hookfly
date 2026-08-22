@@ -19,9 +19,10 @@ export function useTargetInventory(enabled: boolean): TargetInventoryState {
   useEffect(() => {
     if (!enabled || completedRequest.current === request) return;
     let active = true;
+    const controller = new AbortController();
     setLoading(true);
     setError(null);
-    void listTargets().then(
+    void listTargets(controller.signal).then(
       (next) => {
         if (!active) return;
         completedRequest.current = request;
@@ -37,6 +38,7 @@ export function useTargetInventory(enabled: boolean): TargetInventoryState {
     );
     return () => {
       active = false;
+      controller.abort();
     };
   }, [enabled, request]);
 

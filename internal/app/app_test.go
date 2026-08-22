@@ -89,7 +89,11 @@ func TestServersAreSeparateAndDefensive(t *testing.T) {
 		t.Fatal("public and admin listeners share a server")
 	}
 	for name, server := range map[string]*http.Server{"public": publicServer, "admin": adminServer} {
-		if server.ReadHeaderTimeout != 5*time.Second || server.ReadTimeout != 10*time.Second || server.WriteTimeout != 10*time.Second || server.IdleTimeout != 60*time.Second {
+		writeTimeout := 10 * time.Second
+		if name == "admin" {
+			writeTimeout = 30 * time.Second
+		}
+		if server.ReadHeaderTimeout != 5*time.Second || server.ReadTimeout != 10*time.Second || server.WriteTimeout != writeTimeout || server.IdleTimeout != 60*time.Second {
 			t.Fatalf("%s server timeouts = header:%v read:%v write:%v idle:%v", name, server.ReadHeaderTimeout, server.ReadTimeout, server.WriteTimeout, server.IdleTimeout)
 		}
 	}

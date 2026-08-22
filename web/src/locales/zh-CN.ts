@@ -282,6 +282,7 @@ export const zhCN = {
       copyDeployRequestFailed: "无法复制部署请求，请手动选择并复制。",
     },
     errors: {
+      requestTimeout: "请求超时，请重试。",
       requestFailed: "请求失败",
       configStatusFailed: "配置状态读取失败",
       reloadUnknown: "配置重新加载结果未知",
